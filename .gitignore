@@ -1,0 +1,42 @@
+# SECURITY: Never commit secrets
+.env
+*.key
+*.pem
+*.enc
+config/pii_mappings.json
+google_credentials.json
+google_token.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+agent-venv/
+.venv/
+
+# Data
+tasks.json
+*.db
+*.sqlite
+projects_index.json
+
+# Agent workspace
+agent-workspace/
+agent-deploys/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+.env
+.env.*
+__pycache__/
+*.pyc
+chroma_db/
+*.log
+node_modules/

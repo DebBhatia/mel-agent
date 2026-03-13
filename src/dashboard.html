@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mel — Agent Control Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07070c;
+    --surface: #0e0e18;
+    --surface2: #161625;
+    --surface3: #1e1e30;
+    --border: #252540;
+    --text: #e0e0f0;
+    --text-dim: #7070a0;
+    --magenta: #e040a0;
+    --cyan: #40d8e0;
+    --green: #40e080;
+    --amber: #e0a040;
+    --red: #e04060;
+    --purple: #a040e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── Layout ─────────────── */
+  .dashboard {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    grid-template-rows: 60px 1fr;
+    min-height: 100vh;
+  }
+  .top-bar {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 16px;
+  }
+  .top-bar h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--magenta), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .top-bar .status-pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    padding: 4px 12px;
+    border-radius: 12px;
+    letter-spacing: 1px;
+  }
+  .status-pill.online { background: rgba(64,224,128,0.15); color: var(--green); }
+  .status-pill.offline { background: rgba(224,64,96,0.15); color: var(--red); }
+  .status-pill.sleeping { background: rgba(112,112,160,0.15); color: var(--text-dim); }
+
+  /* ── Sidebar ────────────── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    overflow-y: auto;
+  }
+  .nav-section {
+    padding: 0 16px;
+    margin-bottom: 24px;
+  }
+  .nav-section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 0 12px;
+    margin-bottom: 8px;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    transition: all 0.15s;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: rgba(224,64,160,0.1); color: var(--magenta); }
+  .nav-item .icon { font-size: 1.1rem; width: 24px; text-align: center; }
+  .nav-item .badge {
+    margin-left: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: var(--surface3);
+    color: var(--text-dim);
+  }
+
+  /* ── Main Content ───────── */
+  .main {
+    padding: 24px;
+    overflow-y: auto;
+  }
+  .page-title {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+  }
+
+  /* ── Cards ──────────────── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .stat-card.magenta::before { background: var(--magenta); }
+  .stat-card.cyan::before { background: var(--cyan); }
+  .stat-card.green::before { background: var(--green); }
+  .stat-card.amber::before { background: var(--amber); }
+  .stat-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+  }
+  .stat-sub {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* ── Chat / Command Input ── */
+  .command-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .command-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .command-log {
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 16px 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    line-height: 1.8;
+  }
+  .log-entry { margin-bottom: 8px; }
+  .log-entry .time { color: var(--text-dim); margin-right: 8px; }
+  .log-entry .user { color: var(--cyan); }
+  .log-entry .agent { color: var(--magenta); }
+  .log-entry .system { color: var(--amber); }
+  .log-entry .error { color: var(--red); }
+  .command-input-wrap {
+    display: flex;
+    border-top: 1px solid var(--border);
+  }
+  .command-input-wrap input {
+    flex: 1;
+    background: var(--surface2);
+    border: none;
+    padding: 14px 20px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    outline: none;
+  }
+  .command-input-wrap input::placeholder { color: var(--text-dim); }
+  .command-input-wrap button {
+    background: var(--magenta);
+    border: none;
+    padding: 14px 24px;
+    color: white;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .command-input-wrap button:hover { background: var(--magenta-dim, #c03080); }
+
+  /* ── Project List ───────── */
+  .project-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .project-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: border-color 0.15s;
+    cursor: pointer;
+  }
+  .project-card:hover { border-color: var(--magenta); }
+  .project-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: rgba(224,64,160,0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+  .project-info { flex: 1; min-width: 0; }
+  .project-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .project-desc {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .project-meta {
+    display: flex;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .meta-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--surface3);
+    color: var(--text-dim);
+  }
+  .meta-tag.deployed { background: rgba(64,224,128,0.12); color: var(--green); }
+  .meta-tag.failed { background: rgba(224,64,96,0.12); color: var(--red); }
+
+  /* ── Build Log ──────────── */
+  .build-log {
+    background: #050510;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    line-height: 1.8;
+    max-height: 300px;
+    overflow-y: auto;
+    color: var(--text-dim);
+    margin-top: 16px;
+  }
+  .build-log .success { color: var(--green); }
+  .build-log .warn { color: var(--amber); }
+  .build-log .err { color: var(--red); }
+  .build-log .info { color: var(--cyan); }
+
+  /* ── Empty State ────────── */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-dim);
+  }
+  .empty-state .icon { font-size: 3rem; margin-bottom: 12px; opacity: 0.3; }
+  .empty-state p { font-size: 0.85rem; max-width: 300px; margin: 0 auto; }
+
+  /* ── Responsive ─────────── */
+  @media (max-width: 768px) {
+    .dashboard { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="dashboard">
+  <!-- ── Top Bar ─────────────────── -->
+  <div class="top-bar">
+    <h1>MEL</h1>
+    <div class="status-pill sleeping" id="statusPill">SLEEPING</div>
+    <div style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text-dim);" id="clockDisplay"></div>
+  </div>
+
+  <!-- ── Sidebar ─────────────────── -->
+  <div class="sidebar">
+    <div class="nav-section">
+      <div class="nav-section-title">Overview</div>
+      <div class="nav-item active" onclick="showPage('overview')">
+        <span class="icon">📊</span> Dashboard
+      </div>
+      <div class="nav-item" onclick="showPage('command')">
+        <span class="icon">💬</span> Command
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Build</div>
+      <div class="nav-item" onclick="showPage('projects')">
+        <span class="icon">🏗️</span> Projects
+        <span class="badge" id="projectCount">0</span>
+      </div>
+      <div class="nav-item" onclick="showPage('builder')">
+        <span class="icon">⚡</span> Quick Build
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Memory</div>
+      <div class="nav-item" onclick="showPage('knowledge')">
+        <span class="icon">🧠</span> Knowledge Base
+        <span class="badge" id="kbCount">0</span>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">System</div>
+      <div class="nav-item" onclick="showPage('devops')">
+        <span class="icon">🔧</span> DevOps
+      </div>
+      <div class="nav-item" onclick="showPage('security')">
+        <span class="icon">🔒</span> Security
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Main Content ────────────── -->
+  <div class="main" id="mainContent">
+
+    <!-- Overview Page -->
+    <div id="page-overview">
+      <div class="page-title">System Overview</div>
+
+      <div class="card-grid">
+        <div class="stat-card magenta">
+          <div class="stat-label">Agent Status</div>
+          <div class="stat-value" id="agentStatus">Sleeping</div>
+          <div class="stat-sub" id="agentUptime">Say "wake up daddy is home"</div>
+        </div>
+        <div class="stat-card cyan">
+          <div class="stat-label">Ollama</div>
+          <div class="stat-value" id="ollamaStatus">—</div>
+          <div class="stat-sub">Local AI engine</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">Projects Built</div>
+          <div class="stat-value" id="projectsBuilt">0</div>
+          <div class="stat-sub">Total generated</div>
+        </div>
+        <div class="stat-card amber">
+          <div class="stat-label">Memories</div>
+          <div class="stat-value" id="memoriesCount">0</div>
+          <div class="stat-sub">Knowledge base entries</div>
+        </div>
+      </div>
+
+      <!-- Quick command -->
+      <div class="command-section">
+        <div class="command-header">
+          <span style="color: var(--green);">●</span> AGENT TERMINAL
+        </div>
+        <div class="command-log" id="commandLog">
+          <div class="log-entry"><span class="system">System ready. Type a command or say "wake up daddy is home".</span></div>
+        </div>
+        <div class="command-input-wrap">
+          <input type="text" id="commandInput" placeholder="Talk to your agent..." onkeydown="if(event.key==='Enter')sendCommand()">
+          <button onclick="sendCommand()">SEND</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Projects Page -->
+    <div id="page-projects" style="display:none;">
+      <div class="page-title">Generated Projects</div>
+      <div class="project-list" id="projectList">
+        <div class="empty-state">
+          <div class="icon">🏗️</div>
+          <p>No projects yet. Try: "Build me a portfolio website with a dark theme"</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Builder Page -->
+    <div id="page-builder" style="display:none;">
+      <div class="page-title">Quick Build</div>
+      <p style="color: var(--text-dim); margin-bottom: 20px; font-size: 0.9rem;">
+        Describe what you want to build. Your agent will generate the complete project.
+      </p>
+      <div class="command-section">
+        <div class="command-header"><span style="color: var(--magenta);">●</span> BUILD PROMPT</div>
+        <div style="padding: 16px;">
+          <textarea id="buildPrompt" rows="5" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.85rem;resize:vertical;outline:none;" placeholder="Build me a modern dashboard for tracking my AI projects with a dark magenta theme, animated cards, and a progress tracker..."></textarea>
+          <div style="display:flex;gap:12px;margin-top:12px;">
+            <button onclick="buildProject()" style="background:var(--magenta);border:none;padding:10px 24px;border-radius:8px;color:white;font-family:'JetBrains Mono',monospace;font-size:0.8rem;cursor:pointer;">🏗️ BUILD</button>
+            <select id="deployTarget" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.8rem;outline:none;">
+              <option value="copy">Save to disk</option>
+              <option value="local">Local HTTP server</option>
+              <option value="vercel">Deploy to Vercel</option>
+              <option value="netlify">Deploy to Netlify</option>
+            </select>
+          </div>
+        </div>
+        <div class="build-log" id="buildLog" style="display:none;margin:0 16px 16px;"></div>
+      </div>
+
+      <div style="margin-top: 24px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--text-dim);margin-bottom:12px;">EXAMPLE PROMPTS</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <span class="example-pill" onclick="document.getElementById('buildPrompt').value=this.dataset.p" data-p="Build a personal portfolio website with a dark cyberpunk theme, animated hero section, project showcase grid, and contact form" style="padding:6px 14px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;color:var(--text-dim);cursor:pointer;transition:border-color 0.15s;">Portfolio Site</span>
+          <span class="example-pill" onclick="document.getElementById('buildPrompt').value=this.dataset.p" data-p="Create a React dashboard for monitoring server health with CPU, memory, and network charts using recharts, dark theme with magenta accents" style="padding:6px 14px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;color:var(--text-dim);cursor:pointer;transition:border-color 0.15s;">Server Dashboard</span>
+          <span class="example-pill" onclick="document.getElementById('buildPrompt').value=this.dataset.p" data-p="Build a Python CLI tool that scans a directory of images, generates thumbnails, and creates an HTML gallery with lazy loading and lightbox" style="padding:6px 14px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;color:var(--text-dim);cursor:pointer;transition:border-color 0.15s;">Image Gallery Tool</span>
+          <span class="example-pill" onclick="document.getElementById('buildPrompt').value=this.dataset.p" data-p="Create a landing page for an AI consulting business with pricing tiers, testimonials section, animated statistics counter, and a newsletter signup form" style="padding:6px 14px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;color:var(--text-dim);cursor:pointer;transition:border-color 0.15s;">Landing Page</span>
+          <span class="example-pill" onclick="document.getElementById('buildPrompt').value=this.dataset.p" data-p="Build a Python FastAPI microservice that takes a URL, scrapes the page content, summarizes it using Ollama locally, and returns the summary as JSON" style="padding:6px 14px;border-radius:20px;border:1px solid var(--border);font-size:0.75rem;color:var(--text-dim);cursor:pointer;transition:border-color 0.15s;">Web Scraper API</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge Page -->
+    <div id="page-knowledge" style="display:none;">
+      <div class="page-title">Knowledge Base</div>
+      <div class="command-section">
+        <div class="command-header"><span style="color: var(--purple);">●</span> SEARCH MEMORIES</div>
+        <div class="command-input-wrap">
+          <input type="text" id="kbSearchInput" placeholder="Search your agent's memory..." onkeydown="if(event.key==='Enter')searchKB()">
+          <button onclick="searchKB()">SEARCH</button>
+        </div>
+      </div>
+      <div id="kbResults" style="margin-top: 16px;"></div>
+    </div>
+
+    <!-- DevOps Page -->
+    <div id="page-devops" style="display:none;">
+      <div class="page-title">DevOps Terminal</div>
+      <p style="color: var(--text-dim); margin-bottom: 16px; font-size: 0.85rem;">
+        Sandboxed shell — only approved commands are allowed.
+      </p>
+      <div class="command-section">
+        <div class="command-header"><span style="color: var(--green);">●</span> SANDBOXED SHELL</div>
+        <div class="command-log" id="shellLog" style="min-height: 200px;">
+          <div class="log-entry"><span class="system">Allowed: npm, pip, python3, node, git, ls, cat, mkdir, cp, vercel, netlify</span></div>
+        </div>
+        <div class="command-input-wrap">
+          <input type="text" id="shellInput" placeholder="$ " onkeydown="if(event.key==='Enter')runShell()">
+          <button onclick="runShell()">RUN</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command Page -->
+    <div id="page-command" style="display:none;">
+      <div class="page-title">Agent Command Center</div>
+      <div class="command-section" style="height: calc(100vh - 180px); display: flex; flex-direction: column;">
+        <div class="command-header"><span style="color: var(--magenta);">●</span> CONVERSATION</div>
+        <div class="command-log" id="chatLog" style="flex:1; max-height: none;"></div>
+        <div class="command-input-wrap">
+          <input type="text" id="chatInput" placeholder="Talk to Mel..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button onclick="sendChat()">SEND</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Security Page -->
+    <div id="page-security" style="display:none;">
+      <div class="page-title">Security Overview</div>
+      <div class="card-grid">
+        <div class="stat-card green">
+          <div class="stat-label">PII Sanitizer</div>
+          <div class="stat-value" style="font-size:1.2rem;">Active</div>
+          <div class="stat-sub">Strips personal data before cloud calls</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">Code Validator</div>
+          <div class="stat-value" style="font-size:1.2rem;">Active</div>
+          <div class="stat-sub">Blocks dangerous patterns in generated code</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">Shell Sandbox</div>
+          <div class="stat-value" style="font-size:1.2rem;">Active</div>
+          <div class="stat-sub">Only allowed commands can execute</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">Network</div>
+          <div class="stat-value" style="font-size:1.2rem;">LAN Only</div>
+          <div class="stat-sub">Pi ↔ Server on local network</div>
+        </div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;margin-top:16px;">
+        <h3 style="font-size:1rem;margin-bottom:12px;">Security Policies</h3>
+        <div style="font-size:0.85rem;color:var(--text-dim);line-height:2;">
+          <div>✅ All voice processing happens locally on your Raspberry Pi</div>
+          <div>✅ PII is stripped from all Claude API requests</div>
+          <div>✅ API keys stored in local .env file only</div>
+          <div>✅ Generated code scanned for secrets, eval/exec, and shell injection</div>
+          <div>✅ Shell commands restricted to approved whitelist</div>
+          <div>✅ File writes sandboxed to workspace directory</div>
+          <div>✅ Knowledge base stored locally via ChromaDB</div>
+          <div>✅ No telemetry or analytics sent anywhere</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+
+// ── Navigation ────────────────
+function showPage(page) {
+  document.querySelectorAll('[id^="page-"]').forEach(p => p.style.display = 'none');
+  document.getElementById(`page-${page}`).style.display = 'block';
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+}
+
+// ── Clock ─────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clockDisplay').textContent =
+    now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
+    ' ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Health Check ──────────────
+async function checkHealth() {
+  try {
+    const res = await fetch(`${API}/health`);
+    const data = await res.json();
+
+    const pill = document.getElementById('statusPill');
+    if (data.is_awake) {
+      pill.textContent = 'ONLINE';
+      pill.className = 'status-pill online';
+      document.getElementById('agentStatus').textContent = 'Awake';
+      document.getElementById('agentUptime').textContent = 'All systems operational';
+    } else {
+      pill.textContent = 'SLEEPING';
+      pill.className = 'status-pill sleeping';
+      document.getElementById('agentStatus').textContent = 'Sleeping';
+    }
+
+    document.getElementById('ollamaStatus').textContent =
+      data.services?.ollama === 'online' ? 'Online' : 'Offline';
+    document.getElementById('projectsBuilt').textContent =
+      data.stats?.projects_built || 0;
+    document.getElementById('projectCount').textContent =
+      data.stats?.projects_built || 0;
+    document.getElementById('memoriesCount').textContent =
+      data.services?.knowledge_base?.entries || 0;
+    document.getElementById('kbCount').textContent =
+      data.services?.knowledge_base?.entries || 0;
+
+  } catch (e) {
+    document.getElementById('statusPill').textContent = 'OFFLINE';
+    document.getElementById('statusPill').className = 'status-pill offline';
+    document.getElementById('agentStatus').textContent = 'Offline';
+    document.getElementById('agentUptime').textContent = 'Server not reachable';
+  }
+}
+setInterval(checkHealth, 5000);
+checkHealth();
+
+// ── Send Command ──────────────
+async function sendCommand() {
+  const input = document.getElementById('commandInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  const log = document.getElementById('commandLog');
+  const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  log.innerHTML += `<div class="log-entry"><span class="time">${time}</span><span class="user">You:</span> ${escHtml(text)}</div>`;
+
+  try {
+    const res = await fetch(`${API}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: text })
+    });
+    const data = await res.json();
+    const t2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    log.innerHTML += `<div class="log-entry"><span class="time">${t2}</span><span class="agent">Mel:</span> ${escHtml(data.response)}</div>`;
+  } catch (e) {
+    log.innerHTML += `<div class="log-entry"><span class="error">Error: Could not reach agent</span></div>`;
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Send Chat ─────────────────
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  const log = document.getElementById('chatLog');
+  log.innerHTML += `<div class="log-entry"><span class="user">You:</span> ${escHtml(text)}</div>`;
+
+  try {
+    const res = await fetch(`${API}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: text })
+    });
+    const data = await res.json();
+    log.innerHTML += `<div class="log-entry"><span class="agent">Mel:</span> ${escHtml(data.response)}</div>`;
+  } catch (e) {
+    log.innerHTML += `<div class="log-entry"><span class="error">Error: Could not reach agent</span></div>`;
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Build Project ─────────────
+async function buildProject() {
+  const prompt = document.getElementById('buildPrompt').value.trim();
+  if (!prompt) return;
+
+  const target = document.getElementById('deployTarget').value;
+  const logEl = document.getElementById('buildLog');
+  logEl.style.display = 'block';
+  logEl.innerHTML = '<span class="info">🏗️ Generating project...</span>\n';
+
+  try {
+    const res = await fetch(`${API}/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, deploy_target: target })
+    });
+    const data = await res.json();
+
+    if (data.status === 'complete') {
+      logEl.innerHTML += `<span class="success">✅ Project "${data.project_name}" created!</span>\n`;
+      logEl.innerHTML += `<span class="info">Files: ${(data.files||[]).join(', ')}</span>\n`;
+      logEl.innerHTML += `<span class="success">Location: ${data.deploy_url || 'workspace'}</span>\n`;
+      if (data.build_log) {
+        data.build_log.forEach(l => { logEl.innerHTML += l + '\n'; });
+      }
+    } else {
+      logEl.innerHTML += `<span class="err">❌ Build ${data.status}: ${data.error || JSON.stringify(data.validation)}</span>\n`;
+    }
+
+    checkHealth(); // Refresh stats
+    loadProjects();
+  } catch (e) {
+    logEl.innerHTML += `<span class="err">❌ Error: ${e.message}</span>\n`;
+  }
+}
+
+// ── Load Projects ─────────────
+async function loadProjects() {
+  try {
+    const res = await fetch(`${API}/projects`);
+    const data = await res.json();
+    const list = document.getElementById('projectList');
+
+    if (!data.projects || data.projects.length === 0) {
+      list.innerHTML = '<div class="empty-state"><div class="icon">🏗️</div><p>No projects yet. Use Quick Build to generate your first project!</p></div>';
+      return;
+    }
+
+    list.innerHTML = data.projects.map(p => {
+      const typeIcons = { 'html-site': '🌐', 'react-app': '⚛️', 'python-script': '🐍', 'dashboard': '📊', 'landing-page': '🚀', 'api-server': '🔌', 'full-stack': '🏛️' };
+      const icon = typeIcons[p.type] || '📄';
+      const statusClass = p.status?.includes('deployed') ? 'deployed' : p.status === 'failed' ? 'failed' : '';
+      return `
+        <div class="project-card">
+          <div class="project-icon">${icon}</div>
+          <div class="project-info">
+            <div class="project-name">${escHtml(p.name)}</div>
+            <div class="project-desc">${escHtml(p.description || '')}</div>
+          </div>
+          <div class="project-meta">
+            <span class="meta-tag">${p.files} files</span>
+            <span class="meta-tag">${p.type}</span>
+            <span class="meta-tag ${statusClass}">${p.status || 'unknown'}</span>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) { /* server offline */ }
+}
+
+// ── Knowledge Search ──────────
+async function searchKB() {
+  const query = document.getElementById('kbSearchInput').value.trim();
+  if (!query) return;
+
+  try {
+    const res = await fetch(`${API}/knowledge/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, n_results: 5 })
+    });
+    const data = await res.json();
+    const el = document.getElementById('kbResults');
+
+    if (!data.results || data.results.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">🧠</div><p>No matching memories found.</p></div>';
+      return;
+    }
+
+    el.innerHTML = data.results.map(r => `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:8px;">
+        <div style="font-size:0.85rem;line-height:1.6;">${escHtml(r.content?.slice(0, 300) || '')}</div>
+        <div style="font-size:0.7rem;color:var(--text-dim);margin-top:8px;">
+          ${r.metadata?.category || ''} · ${r.metadata?.timestamp?.slice(0, 10) || ''} · distance: ${r.distance?.toFixed(3) || ''}
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    document.getElementById('kbResults').innerHTML = '<div class="empty-state"><p>Could not reach server.</p></div>';
+  }
+}
+
+// ── Shell ─────────────────────
+async function runShell() {
+  const input = document.getElementById('shellInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  input.value = '';
+
+  const log = document.getElementById('shellLog');
+  log.innerHTML += `<div class="log-entry"><span style="color:var(--cyan);">$</span> ${escHtml(cmd)}</div>`;
+
+  try {
+    const res = await fetch(`${API}/shell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd })
+    });
+    const data = await res.json();
+    if (data.success) {
+      log.innerHTML += `<div class="log-entry" style="white-space:pre-wrap;">${escHtml(data.stdout)}</div>`;
+    } else {
+      log.innerHTML += `<div class="log-entry"><span class="error">${escHtml(data.stderr)}</span></div>`;
+    }
+  } catch (e) {
+    log.innerHTML += `<div class="log-entry"><span class="error">Error: ${e.message}</span></div>`;
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Helpers ───────────────────
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+// ── Init ──────────────────────
+loadProjects();
+</script>
+</body>
+</html>

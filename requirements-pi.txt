@@ -1,0 +1,8 @@
+# Raspberry Pi dependencies (voice listener)
+httpx>=0.27.0
+python-dotenv>=1.0.0
+numpy>=1.26.0
+PyAudio>=0.2.14
+openai-whisper>=20240930
+openwakeword>=0.6.0
+onnxruntime>=1.19.0
