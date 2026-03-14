@@ -1,0 +1,27 @@
+[Unit]
+Description=Mel AI Agent - Wake Word Listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/mel-agent/src
+EnvironmentFile=/home/pi/mel-agent/.env
+ExecStart=/home/pi/mel-agent/venv/bin/python wake_listener.py
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+
+# Allow audio device access
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target
