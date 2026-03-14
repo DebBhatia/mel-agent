@@ -1245,13 +1245,15 @@ updateClock();
 // ═══════════════════════════════════════════
 // ACTIVITY FEED
 // ═══════════════════════════════════════════
+const ALLOWED_COLORS = new Set(['cyan', 'magenta', 'green', 'amber', 'purple']);
 function addActivity(text, color = 'cyan') {
+  const safeColor = ALLOWED_COLORS.has(color) ? color : 'cyan';
   const feed = document.getElementById('activityFeed');
   const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const item = document.createElement('div');
   item.className = 'activity-item';
   item.style.animation = 'fadeUp 0.3s ease-out';
-  item.innerHTML = `<div class="activity-dot ${color}"></div><span>${escHtml(text)}</span><span class="activity-time">${time}</span>`;
+  item.innerHTML = `<div class="activity-dot ${safeColor}"></div><span>${escHtml(text)}</span><span class="activity-time">${time}</span>`;
   feed.insertBefore(item, feed.firstChild);
   if (feed.children.length > 20) feed.removeChild(feed.lastChild);
 }
@@ -1384,21 +1386,21 @@ async function buildProject() {
 
     if (data.status === 'complete') {
       logEl.innerHTML += `<span class="success">Project "${escHtml(data.project_name)}" created!</span>\n`;
-      logEl.innerHTML += `<span class="info">Files: ${(data.files || []).join(', ')}</span>\n`;
-      logEl.innerHTML += `<span class="success">Location: ${data.deploy_url || 'workspace'}</span>\n`;
+      logEl.innerHTML += `<span class="info">Files: ${escHtml((data.files || []).join(', '))}</span>\n`;
+      logEl.innerHTML += `<span class="success">Location: ${escHtml(data.deploy_url || 'workspace')}</span>\n`;
       if (data.build_log) {
-        data.build_log.forEach(l => { logEl.innerHTML += l + '\n'; });
+        data.build_log.forEach(l => { logEl.innerHTML += escHtml(l) + '\n'; });
       }
-      addActivity(`Built: ${data.project_name}`, 'green');
+      addActivity(`Built: ${escHtml(data.project_name)}`, 'green');
     } else {
-      logEl.innerHTML += `<span class="err">Build ${data.status}: ${data.error || JSON.stringify(data.validation)}</span>\n`;
+      logEl.innerHTML += `<span class="err">Build ${escHtml(data.status)}: ${escHtml(data.error || JSON.stringify(data.validation))}</span>\n`;
       addActivity('Build failed', 'amber');
     }
 
     checkHealth();
     loadProjects();
   } catch (e) {
-    logEl.innerHTML += `<span class="err">Error: ${e.message}</span>\n`;
+    logEl.innerHTML += `<span class="err">Error: ${escHtml(e.message)}</span>\n`;
     addActivity('Build error', 'amber');
   }
 }
@@ -1429,9 +1431,9 @@ async function loadProjects() {
             <div class="project-desc">${escHtml(p.description || '')}</div>
           </div>
           <div class="project-meta">
-            <span class="meta-tag">${p.files} files</span>
-            <span class="meta-tag">${p.type}</span>
-            <span class="meta-tag ${statusClass}">${p.status || 'unknown'}</span>
+            <span class="meta-tag">${escHtml(p.files)} files</span>
+            <span class="meta-tag">${escHtml(p.type)}</span>
+            <span class="meta-tag ${escAttr(statusClass)}">${escHtml(p.status || 'unknown')}</span>
           </div>
         </div>`;
     }).join('');
@@ -1499,7 +1501,7 @@ async function runShell() {
       log.innerHTML += `<div class="log-entry"><span class="error">${escHtml(data.stderr)}</span></div>`;
     }
   } catch (e) {
-    log.innerHTML += `<div class="log-entry"><span class="error">Error: ${e.message}</span></div>`;
+    log.innerHTML += `<div class="log-entry"><span class="error">Error: ${escHtml(e.message)}</span></div>`;
   }
   log.scrollTop = log.scrollHeight;
 }
@@ -1509,7 +1511,11 @@ async function runShell() {
 // ═══════════════════════════════════════════
 function escHtml(s) {
   if (!s) return '';
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '<br>');
+}
+function escAttr(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ═══════════════════════════════════════════
