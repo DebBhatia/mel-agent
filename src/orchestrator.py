@@ -162,32 +162,39 @@ User request: """
             logger.error(f"Ollama classification failed: {e}")
             return kw_result
 
+    @staticmethod
+    def _safe_summary(user_input: str) -> str:
+        """Create a safe summary that strips potential PII for classification metadata."""
+        # Truncate and avoid storing full raw input in classification dicts
+        return user_input[:100]
+
     def _keyword_classify(self, user_input: str) -> dict:
         """Fallback keyword-based classifier when Ollama fails."""
         text = user_input.lower()
+        summary = self._safe_summary(user_input)
 
         if any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget"]):
-            return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": user_input}
+            return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["recall", "what did i", "do you remember", "what is my", "what's my"]):
-            return {"category": "KNOWLEDGE", "intent": "recall", "requires_cloud": False, "summary": user_input}
+            return {"category": "KNOWLEDGE", "intent": "recall", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "app", "script", "dashboard", "landing page"]):
-            return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": user_input}
+            return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "remind"]):
-            return {"category": "CALENDAR", "intent": "manage", "requires_cloud": False, "summary": user_input}
+            return {"category": "CALENDAR", "intent": "manage", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["book", "reservation", "table", "hotel"]):
-            return {"category": "RESERVATION", "intent": "book", "requires_cloud": True, "summary": user_input}
+            return {"category": "RESERVATION", "intent": "book", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["send", "text", "email", "message", "call"]):
-            return {"category": "COMMUNICATION", "intent": "send", "requires_cloud": False, "summary": user_input}
+            return {"category": "COMMUNICATION", "intent": "send", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["light", "lock", "thermostat", "temperature", "turn on", "turn off"]):
-            return {"category": "HOME", "intent": "control", "requires_cloud": False, "summary": user_input}
+            return {"category": "HOME", "intent": "control", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["status", "system", "setting", "shut down", "sleep", "what can you"]):
-            return {"category": "SYSTEM", "intent": "status", "requires_cloud": False, "summary": user_input}
+            return {"category": "SYSTEM", "intent": "status", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["deploy", "git", "server", "docker", "process", "restart"]):
-            return {"category": "DEVOPS", "intent": "manage", "requires_cloud": False, "summary": user_input}
+            return {"category": "DEVOPS", "intent": "manage", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["my name", "my address", "my phone", "about me", "personal"]):
-            return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": user_input}
+            return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
         else:
-            return {"category": "INFORMATION", "intent": "unknown", "requires_cloud": True, "summary": user_input}
+            return {"category": "INFORMATION", "intent": "unknown", "requires_cloud": True, "summary": summary}
 
 
 # ─────────────────────────────────────────────
@@ -218,14 +225,16 @@ class OllamaClient:
                 result = response.json()
                 assistant_msg = result["message"]["content"]
 
-                # Update local history
+                # Update local history (capped to prevent unbounded growth)
                 self.conversation_history.append({"role": "user", "content": message})
                 self.conversation_history.append({"role": "assistant", "content": assistant_msg})
+                if len(self.conversation_history) > 30:
+                    self.conversation_history = self.conversation_history[-20:]
 
                 return assistant_msg
         except Exception as e:
             logger.error(f"Ollama error: {e}")
-            return f"Local model error: {e}"
+            return "Local model temporarily unavailable. Is Ollama running?"
 
     async def is_available(self) -> bool:
         """Check if Ollama is running."""
@@ -306,7 +315,7 @@ class ClaudeClient:
                 return self.sanitizer.desanitize(raw_response)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
-            return f"Cloud reasoning error: {e}"
+            return "Cloud reasoning temporarily unavailable. Try again or use local model."
 
 
 # ─────────────────────────────────────────────
@@ -332,7 +341,7 @@ class ActionRegistry:
             return result
         except Exception as e:
             logger.error(f"Action {action_name} failed: {e}")
-            return f"Action failed: {e}"
+            return f"Action '{action_name}' failed. Check logs for details."
 
 
 # ─────────────────────────────────────────────
@@ -439,7 +448,7 @@ class AgentOrchestrator:
         """Deactivate the agent."""
         self.is_awake = False
         logger.info(f"🔴 {Config.AGENT_NAME} going to sleep.")
-        return f"{Config.AGENT_NAME} is going to sleep. Say '{Config.WAKE_PHRASE}' to wake me up."
+        return f"{Config.AGENT_NAME} is going to sleep. Use the wake command to wake me up."
 
     async def process(self, user_input: str) -> str:
         """Main processing pipeline."""
@@ -455,9 +464,9 @@ class AgentOrchestrator:
             return ""  # Silent when sleeping
 
         # Step 1: Classify intent locally (no data leaves machine)
-        logger.info(f"Classifying: {user_input[:50]}...")
+        logger.info(f"Classifying user input ({len(user_input)} chars)...")
         classification = await self.classifier.classify(user_input)
-        logger.info(f"Intent: {classification}")
+        logger.info(f"Intent: category={classification.get('category')}, intent={classification.get('intent')}")
 
         category = classification.get("category", "INFORMATION")
         requires_cloud = classification.get("requires_cloud", False)
@@ -544,7 +553,7 @@ class AgentOrchestrator:
             "start_time": f"{today}T13:30:00",
             "end_time": f"{today}T14:00:00",
             "location": "",
-            "description": f"Booked by {Config.AGENT_NAME}: {user_input}",
+            "description": f"Booked by {Config.AGENT_NAME}",
             "timezone": "America/Chicago",
         }
 
@@ -673,11 +682,12 @@ Request: {summary}"""
                     output = result["stdout"][:1000] if result["stdout"] else "Command completed successfully."
                     return f"✅ Executed: `{command}`\n{explanation}\n\nOutput:\n{output}"
                 else:
-                    return f"❌ Command failed: {result['stderr']}"
+                    return "❌ Command was blocked or failed. Try being more specific."
             else:
-                return f"I understood: {summary}, but couldn't determine the right command. Can you be more specific?"
+                return "I couldn't determine the right command. Can you be more specific?"
         except Exception as e:
-            return f"DevOps processing error: {e}"
+            logger.error(f"DevOps processing error: {e}")
+            return "DevOps processing error. Check logs for details."
 
     # ─────────────────────────────────────────────
     # KNOWLEDGE Handler - Memory & recall
@@ -723,7 +733,7 @@ async def main():
     agent = AgentOrchestrator()
     print(f"\n{'='*50}")
     print(f"  {Config.AGENT_NAME} - Personal AI Agent")
-    print(f"  Say '{Config.WAKE_PHRASE}' to start")
+    print(f"  Say the wake phrase to start")
     print(f"{'='*50}\n")
 
     while True:

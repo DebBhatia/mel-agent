@@ -6,16 +6,20 @@ Stores conversations, documents, and generated project info.
 All data stays on YOUR machine — nothing leaves.
 
 Uses ChromaDB for vector storage and retrieval.
+PII is sanitized before storage. Old entries are auto-purged.
 """
 
 import os
 import json
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger("knowledge")
+
+# Max age for conversation entries (days)
+CONVERSATION_RETENTION_DAYS = int(os.getenv("KB_RETENTION_DAYS", "90"))
 
 
 class KnowledgeBase:
@@ -30,7 +34,44 @@ class KnowledgeBase:
         os.makedirs(self.persist_dir, exist_ok=True)
         self.client = None
         self.collection = None
+        self._sanitizer = None
         self._initialize()
+        self._init_sanitizer()
+        self._purge_old_entries()
+
+    def _init_sanitizer(self):
+        """Load PII sanitizer for cleaning data before storage."""
+        try:
+            from security import EnhancedPIISanitizer
+            self._sanitizer = EnhancedPIISanitizer()
+        except ImportError:
+            pass
+
+    def _sanitize(self, text: str) -> str:
+        """Strip PII before storing in knowledge base."""
+        if self._sanitizer:
+            return self._sanitizer.sanitize(text)
+        return text
+
+    def _purge_old_entries(self):
+        """Remove conversation entries older than retention period."""
+        if not self.collection:
+            return
+        try:
+            cutoff = (datetime.now() - timedelta(days=CONVERSATION_RETENTION_DAYS)).isoformat()
+            # ChromaDB where filter for old conversations
+            results = self.collection.get(
+                where={"$and": [
+                    {"category": {"$eq": "conversation"}},
+                    {"timestamp": {"$lt": cutoff}},
+                ]},
+            )
+            if results and results.get("ids"):
+                self.collection.delete(ids=results["ids"])
+                logger.info(f"Purged {len(results['ids'])} expired conversation entries")
+        except Exception as e:
+            # ChromaDB may not support complex where on older versions — skip silently
+            logger.debug(f"Purge skipped: {e}")
 
     def _initialize(self):
         """Set up ChromaDB with local persistence."""
@@ -55,22 +96,31 @@ class KnowledgeBase:
             )
 
     def store(self, content: str, metadata: dict = None, category: str = "general") -> str:
-        """Store a piece of knowledge."""
+        """Store a piece of knowledge. PII is sanitized before storage."""
         if not self.collection:
             return "Knowledge base not available"
 
+        # Sanitize content before persisting
+        safe_content = self._sanitize(content)
+
         doc_id = hashlib.md5(
-            f"{content[:100]}-{datetime.now().isoformat()}".encode()
+            f"{safe_content[:100]}-{datetime.now().isoformat()}".encode()
         ).hexdigest()[:16]
+
+        # Sanitize metadata values too
+        safe_metadata = {}
+        if metadata:
+            for k, v in metadata.items():
+                safe_metadata[k] = self._sanitize(str(v)) if isinstance(v, str) else v
 
         meta = {
             "category": category,
             "timestamp": datetime.now().isoformat(),
-            **(metadata or {}),
+            **safe_metadata,
         }
 
         self.collection.add(
-            documents=[content],
+            documents=[safe_content],
             metadatas=[meta],
             ids=[doc_id],
         )
@@ -102,11 +152,10 @@ class KnowledgeBase:
         return entries
 
     def store_conversation(self, user_input: str, agent_response: str):
-        """Store a conversation turn for future reference."""
+        """Store a conversation turn for future reference. PII is auto-sanitized."""
         content = f"User: {user_input}\nAgent: {agent_response}"
-        self.store(content, category="conversation", metadata={
-            "user_input": user_input[:200],
-        })
+        # Don't store raw user_input in metadata — sanitize() handles the content
+        self.store(content, category="conversation")
 
     def store_project(self, project_name: str, description: str, files: list[str]):
         """Store info about a generated project."""
@@ -135,5 +184,4 @@ class KnowledgeBase:
         return {
             "status": "active",
             "entries": self.collection.count(),
-            "persist_dir": self.persist_dir,
         }

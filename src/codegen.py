@@ -454,8 +454,8 @@ class Deployer:
                 return url
             else:
                 error = stderr.decode()
-                project.log(f"❌ Vercel deploy failed: {error}")
-                return f"Deploy failed: {error}"
+                project.log(f"❌ Vercel deploy failed")
+                return "Deploy failed. Check build log for details."
         except FileNotFoundError:
             project.log("❌ Vercel CLI not installed. Run: npm i -g vercel")
             return "Vercel CLI not installed. Run: npm i -g vercel"
@@ -481,7 +481,7 @@ class Deployer:
                 project.log(f"✅ Live at {url}")
                 return url
             else:
-                return f"Deploy failed: {stderr.decode()}"
+                return "Deploy failed. Check build log for details."
         except FileNotFoundError:
             return "Netlify CLI not installed. Run: npm i -g netlify-cli"
 
@@ -530,16 +530,29 @@ class ShellExecutor:
         "> /dev/sda", ":(){ :|:& };:",
     ]
 
+    # Shell metacharacters that enable command injection
+    SHELL_INJECTION_CHARS = [";", "&&", "||", "|", "`", "$(", "${", "\n", "\r", ">", "<"]
+
     @classmethod
     async def execute(cls, command: str, cwd: str = None, timeout: int = 120) -> dict:
         """Execute a shell command with safety checks."""
+        # Security: Reject commands with shell injection metacharacters
+        for char in cls.SHELL_INJECTION_CHARS:
+            if char in command:
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": f"BLOCKED: Command contains shell metacharacter. Only simple commands allowed.",
+                    "returncode": -1,
+                }
+
         # Security: Check for blocked patterns
         for blocked in cls.BLOCKED_COMMANDS:
             if blocked in command:
                 return {
                     "success": False,
                     "stdout": "",
-                    "stderr": f"BLOCKED: Command contains dangerous pattern: {blocked}",
+                    "stderr": f"BLOCKED: Command contains dangerous pattern.",
                     "returncode": -1,
                 }
 
@@ -551,8 +564,7 @@ class ShellExecutor:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": f"BLOCKED: Command '{base_cmd}' not in allowed list. "
-                          f"Allowed: {list(cls.ALLOWED_COMMANDS.keys())}",
+                "stderr": f"BLOCKED: Command not in allowed list.",
                 "returncode": -1,
             }
 
@@ -563,8 +575,7 @@ class ShellExecutor:
                 return {
                     "success": False,
                     "stdout": "",
-                    "stderr": f"BLOCKED: '{base_cmd} {cmd_parts[1]}' not allowed. "
-                              f"Allowed: {base_cmd} {allowed_sub}",
+                    "stderr": f"BLOCKED: Subcommand not allowed.",
                     "returncode": -1,
                 }
 
@@ -575,13 +586,14 @@ class ShellExecutor:
                 return {
                     "success": False,
                     "stdout": "",
-                    "stderr": f"BLOCKED: Working directory outside sandbox",
+                    "stderr": "BLOCKED: Working directory outside sandbox",
                     "returncode": -1,
                 }
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            # Use create_subprocess_exec (NOT _shell) to prevent injection
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_parts,
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -590,8 +602,8 @@ class ShellExecutor:
 
             return {
                 "success": proc.returncode == 0,
-                "stdout": stdout.decode()[:5000],  # Cap output size
-                "stderr": stderr.decode()[:2000],
+                "stdout": stdout.decode(errors="replace")[:5000],
+                "stderr": stderr.decode(errors="replace")[:2000],
                 "returncode": proc.returncode,
             }
         except asyncio.TimeoutError:
@@ -603,10 +615,11 @@ class ShellExecutor:
                 "returncode": -1,
             }
         except Exception as e:
+            logger.error(f"Shell execution error: {e}")
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": str(e),
+                "stderr": "Command execution failed",
                 "returncode": -1,
             }
 

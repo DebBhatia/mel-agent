@@ -216,7 +216,7 @@ class ReservationPlugin:
                 url=twiml_url,
                 status_callback=f"http://your-server.com/call-status",
             )
-            return f"Calling {restaurant_phone} to make your reservation. Call SID: {call.sid}"
+            return "Calling the restaurant to make your reservation. You'll be notified when it's confirmed."
         except Exception as e:
             return f"Failed to make call: {e}"
 
@@ -246,7 +246,7 @@ class CommunicationPlugin:
                 from_=self.twilio_phone,
                 to=params.get("to", ""),
             )
-            return f"SMS sent! SID: {message.sid}"
+            return "SMS sent successfully."
         except Exception as e:
             return f"SMS failed: {e}"
 
@@ -273,7 +273,7 @@ class CommunicationPlugin:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
-            return f"Email sent to {params.get('to')}"
+            return "Email sent successfully."
         except Exception as e:
             return f"Email failed: {e}"
 
