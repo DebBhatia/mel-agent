@@ -92,7 +92,7 @@ class CalendarEventRequest(BaseModel):
     end_time: Optional[str] = None
     location: Optional[str] = ""
     description: Optional[str] = ""
-    timezone: Optional[str] = "Europe/Dublin"
+    timezone: Optional[str] = "America/Chicago"
 
 
 # ── Core ─────────────────────────────────────

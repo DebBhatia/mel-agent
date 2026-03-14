@@ -545,7 +545,7 @@ class AgentOrchestrator:
             "end_time": f"{today}T14:00:00",
             "location": "",
             "description": f"Booked by {Config.AGENT_NAME}: {user_input}",
-            "timezone": "Europe/Dublin",
+            "timezone": "America/Chicago",
         }
 
         # Try to extract specifics from the input
