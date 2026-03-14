@@ -86,6 +86,14 @@ class ShellRequest(BaseModel):
     command: str
     cwd: Optional[str] = None
 
+class CalendarEventRequest(BaseModel):
+    title: str
+    start_time: str
+    end_time: Optional[str] = None
+    location: Optional[str] = ""
+    description: Optional[str] = ""
+    timezone: Optional[str] = "Europe/Dublin"
+
 
 # ── Core ─────────────────────────────────────
 @app.get("/health")
@@ -188,6 +196,37 @@ async def execute_shell(request: ShellRequest):
         return await ShellExecutor.execute(request.command, request.cwd)
     except ImportError:
         raise HTTPException(status_code=503, detail="Shell executor not available")
+
+
+# ── Calendar ─────────────────────────────────
+@app.post("/calendar/book")
+async def book_calendar_event(request: CalendarEventRequest):
+    """Book a calendar event via Google Calendar API."""
+    from datetime import timedelta
+
+    end_time = request.end_time
+    if not end_time:
+        # Default to 30 min event
+        start_dt = datetime.fromisoformat(request.start_time)
+        end_time = (start_dt + timedelta(minutes=30)).isoformat()
+
+    params = {
+        "title": request.title,
+        "start_time": request.start_time,
+        "end_time": end_time,
+        "location": request.location,
+        "description": request.description,
+        "timezone": request.timezone,
+    }
+
+    result = await agent.actions.execute("calendar_create", params)
+    return {"status": "ok", "result": result}
+
+@app.get("/calendar/events")
+async def list_calendar_events():
+    """List upcoming calendar events."""
+    result = await agent.actions.execute("calendar_list", {"days": 7})
+    return {"status": "ok", "result": result}
 
 
 # ── Tasks ────────────────────────────────────

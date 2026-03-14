@@ -390,6 +390,16 @@ class AgentOrchestrator:
         self.build_pipeline = None
         self.knowledge = None
         self._init_extensions()
+        self._init_plugins()
+
+    def _init_plugins(self):
+        """Register action plugins (calendar, reservations, comms)."""
+        try:
+            from actions import register_all_plugins
+            register_all_plugins(self.actions)
+            logger.info("✅ Action plugins registered")
+        except Exception as e:
+            logger.warning(f"Action plugins not loaded: {e}")
 
     def _init_extensions(self):
         """Initialize optional extensions (codegen, knowledge base)."""
@@ -474,7 +484,11 @@ class AgentOrchestrator:
                               "Answer based on the user's personal context. Be helpful and concise."
             )
 
-        elif category in ["CALENDAR", "RESERVATION", "COMMUNICATION"]:
+        elif category == "CALENDAR":
+            # ── Calendar Actions ───────────────────
+            response = await self._handle_calendar(user_input, classification)
+
+        elif category in ["RESERVATION", "COMMUNICATION"]:
             # Hybrid: plan with Claude, execute locally
             if requires_cloud:
                 plan = await self.claude.reason(
@@ -504,6 +518,58 @@ class AgentOrchestrator:
                 pass  # Don't let KB errors break the main flow
 
         return response
+
+    # ─────────────────────────────────────────────
+    # CALENDAR Handler - Book appointments & events
+    # ─────────────────────────────────────────────
+    async def _handle_calendar(self, user_input: str, classification: dict) -> str:
+        """Handle calendar requests by extracting event details and calling the calendar plugin."""
+        intent = classification.get("intent", "")
+        summary = classification.get("summary", user_input)
+
+        if "list" in intent or "check" in intent or "show" in intent:
+            result = await self.actions.execute("calendar_list", {"days": 7})
+            return result
+
+        if "available" in intent or "free" in intent:
+            return await self.actions.execute("calendar_check", {})
+
+        # Default: create event — extract details from input
+        # Parse natural language into event params
+        from datetime import date as date_cls
+        today = date_cls.today().isoformat()
+
+        params = {
+            "title": summary or user_input,
+            "start_time": f"{today}T13:30:00",
+            "end_time": f"{today}T14:00:00",
+            "location": "",
+            "description": f"Booked by {Config.AGENT_NAME}: {user_input}",
+            "timezone": "Europe/Dublin",
+        }
+
+        # Try to extract specifics from the input
+        import re
+        time_match = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', user_input, re.IGNORECASE)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = time_match.group(2)
+            ampm = (time_match.group(3) or '').lower()
+            if ampm == 'pm' and hour < 12:
+                hour += 12
+            elif ampm == 'am' and hour == 12:
+                hour = 0
+            params["start_time"] = f"{today}T{hour:02d}:{minute}:00"
+            # Default 30 min duration
+            end_hour = hour
+            end_min = int(minute) + 30
+            if end_min >= 60:
+                end_hour += 1
+                end_min -= 60
+            params["end_time"] = f"{today}T{end_hour:02d}:{end_min:02d}:00"
+
+        result = await self.actions.execute("calendar_create", params)
+        return result
 
     # ─────────────────────────────────────────────
     # CODE Handler - Build apps, sites, scripts

@@ -80,11 +80,11 @@ class CalendarPlugin:
             "description": params.get("description", "Created by AI Agent"),
             "start": {
                 "dateTime": params.get("start_time"),
-                "timeZone": params.get("timezone", "America/New_York"),
+                "timeZone": params.get("timezone", "Europe/Dublin"),
             },
             "end": {
                 "dateTime": params.get("end_time"),
-                "timeZone": params.get("timezone", "America/New_York"),
+                "timeZone": params.get("timezone", "Europe/Dublin"),
             },
             "reminders": {
                 "useDefault": False,
