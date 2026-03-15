@@ -98,11 +98,13 @@ class IntentClassifier:
     CLASSIFICATION_PROMPT_TEMPLATE = """You are an intent classifier for a personal AI assistant.
 Classify the user's request into exactly ONE of these categories:
 
-- CALENDAR: Anything about scheduling, events, meetings, reminders
-- RESERVATION: Booking restaurants, hotels, appointments
+- CALENDAR: Anything about scheduling, events, meetings, appointments on the calendar
+- RESERVATION: Booking restaurants, hotels, doctor appointments
 - INFORMATION: General questions, research, recommendations
 - COMMUNICATION: Sending messages, emails, making calls
-- HOME: Smart home controls, device management
+- HOME: Smart home controls, lights, locks, thermostat, temperature, device management
+- MUSIC: Play music, pause, skip, volume, what's playing, Spotify
+- REMINDER: Set reminders, alarms, "remind me", "in 30 minutes", scheduled tasks
 - PERSONAL: Questions about personal data, preferences, history
 - SYSTEM: Agent management, settings, status checks
 - CODE: Build/create/generate apps, websites, scripts, interfaces, dashboards, components, landing pages, any coding task
@@ -153,7 +155,7 @@ User request: """
                             pass
 
                 valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION",
-                                    "HOME", "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
+                                    "HOME", "MUSIC", "REMINDER", "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
                 if parsed and isinstance(parsed, dict) and parsed.get("category", "").upper() in valid_categories:
                     parsed["category"] = parsed["category"].upper()
                     return parsed
@@ -181,15 +183,27 @@ User request: """
             return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["recall", "what did i", "do you remember"]):
             return {"category": "KNOWLEDGE", "intent": "recall", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["play music", "play song", "pause music", "skip track", "next song",
+                                        "what's playing", "now playing", "what is playing", "playing now",
+                                        "spotify", "play some",
+                                        "stop music", "previous song", "volume up", "volume down"]):
+            return {"category": "MUSIC", "intent": "control", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["remind me", "set a reminder", "set reminder", "alarm",
+                                        "in 30 minutes", "in an hour", "remind at"]):
+            return {"category": "REMINDER", "intent": "create", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["my reminders", "pending reminders", "list reminders",
+                                        "cancel reminder", "delete reminder"]):
+            return {"category": "REMINDER", "intent": "manage", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "app", "script", "dashboard", "landing page"]):
             return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
-        elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "remind"]):
+        elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "appointment"]):
             return {"category": "CALENDAR", "intent": "manage", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["book", "reservation", "table", "hotel"]):
+        elif any(kw in text for kw in ["book", "reservation", "table", "hotel", "reserve"]):
             return {"category": "RESERVATION", "intent": "book", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["send", "text", "email", "message", "call"]):
             return {"category": "COMMUNICATION", "intent": "send", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["light", "lock", "thermostat", "temperature", "turn on", "turn off"]):
+        elif any(kw in text for kw in ["light", "lock", "thermostat", "temperature", "turn on", "turn off",
+                                        "brightness", "dim", "scene", "smart home", "front door", "garage"]):
             return {"category": "HOME", "intent": "control", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["status", "system", "setting", "shut down", "sleep", "what can you"]):
             return {"category": "SYSTEM", "intent": "status", "requires_cloud": False, "summary": summary}
@@ -455,20 +469,48 @@ class AgentOrchestrator:
         self.tasks = TaskManager()
         self.is_awake = False
 
-        # New capabilities
+        # Capabilities
         self.build_pipeline = None
         self.knowledge = None
+        self.scheduler = None
+        self.spotify = None
+        self.smarthome = None
         self._init_extensions()
         self._init_plugins()
 
     def _init_plugins(self):
-        """Register action plugins (calendar, reservations, comms)."""
+        """Register action plugins (calendar, reservations, comms, music, home)."""
         try:
             from actions import register_all_plugins
             register_all_plugins(self.actions)
             logger.info("✅ Action plugins registered")
         except Exception as e:
             logger.warning(f"Action plugins not loaded: {e}")
+
+        # Spotify music player
+        try:
+            from music import register_music_plugins, SpotifyPlayer
+            self.spotify = SpotifyPlayer()
+            register_music_plugins(self.actions)
+            logger.info("✅ Spotify music plugin loaded")
+        except ImportError:
+            logger.warning("Music plugin not available")
+
+        # Smart home
+        try:
+            from smarthome import register_smarthome_plugins
+            self.smarthome = register_smarthome_plugins(self.actions)
+            logger.info("✅ Smart home plugin loaded")
+        except ImportError:
+            logger.warning("Smart home plugin not available")
+
+        # Scheduler / reminders
+        try:
+            from scheduler import TaskScheduler
+            self.scheduler = TaskScheduler()
+            logger.info("✅ Task scheduler loaded")
+        except ImportError:
+            logger.warning("Scheduler not available")
 
     def _init_extensions(self):
         """Initialize optional extensions (codegen, knowledge base)."""
@@ -554,7 +596,7 @@ class AgentOrchestrator:
         category = kw.get("category", "INFORMATION")
 
         # Only call Ollama classifier for clear action categories that need intent detail
-        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME"}
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER"}
         if category in ACTION_CATEGORIES:
             logger.info(f"Classifying user input ({len(user_input)} chars)...")
             classification = await self.classifier.classify(user_input)
@@ -592,10 +634,16 @@ class AgentOrchestrator:
         elif category == "CALENDAR":
             response = await self._handle_calendar(user_input, classification)
 
-        elif category in ["RESERVATION", "COMMUNICATION"]:
-            response = await self.claude.converse(user_input)
+        elif category == "MUSIC":
+            response = await self._handle_music(user_input, classification)
+
+        elif category == "REMINDER":
+            response = await self._handle_reminder(user_input, classification)
 
         elif category == "HOME":
+            response = await self._handle_home(user_input, classification)
+
+        elif category in ["RESERVATION", "COMMUNICATION"]:
             response = await self.claude.converse(user_input)
 
         else:
@@ -808,6 +856,185 @@ Request: {summary}"""
         else:
             # Default: search
             return self.knowledge.recall(user_input)
+
+
+    # ─────────────────────────────────────────────
+    # MUSIC Handler - Spotify playback control
+    # ─────────────────────────────────────────────
+    async def _handle_music(self, user_input: str, classification: dict) -> str:
+        """Handle music playback commands."""
+        text = user_input.lower()
+
+        if not self.spotify:
+            return "Music player not available. Make sure music.py is in the src/ directory."
+
+        if not self.spotify.auth.is_configured():
+            return "Spotify is not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to your .env file."
+
+        if not self.spotify.auth.is_authenticated:
+            return "Spotify not connected. Visit /spotify/auth in your browser to authenticate."
+
+        if any(kw in text for kw in ["pause", "stop music"]):
+            return await self.actions.execute("music_pause", {})
+
+        elif any(kw in text for kw in ["skip", "next song", "next track"]):
+            return await self.actions.execute("music_skip", {})
+
+        elif any(kw in text for kw in ["what's playing", "now playing", "current song", "what song"]):
+            return await self.actions.execute("music_now_playing", {})
+
+        elif any(kw in text for kw in ["previous", "go back", "last song"]):
+            data = await self.spotify.previous_track()
+            return data
+
+        elif "volume" in text:
+            import re
+            m = re.search(r'(\d+)', text)
+            if m:
+                return await self.spotify.set_volume(int(m.group(1)))
+            elif "up" in text:
+                return await self.spotify.set_volume(80)
+            elif "down" in text:
+                return await self.spotify.set_volume(30)
+            return await self.spotify.set_volume(50)
+
+        elif any(kw in text for kw in ["play"]):
+            # Extract what to play
+            import re
+            play_match = re.search(r'play\s+(?:me\s+)?(?:some\s+)?(.+)', text)
+            if play_match:
+                query = play_match.group(1).strip()
+                return await self.actions.execute("music_play", {"query": query})
+            return await self.actions.execute("music_play", {})
+
+        else:
+            return await self.actions.execute("music_now_playing", {})
+
+    # ─────────────────────────────────────────────
+    # REMINDER Handler - Scheduled tasks & reminders
+    # ─────────────────────────────────────────────
+    async def _handle_reminder(self, user_input: str, classification: dict) -> str:
+        """Handle reminder creation and management."""
+        if not self.scheduler:
+            return "Scheduler not available. Make sure scheduler.py is in the src/ directory."
+
+        text = user_input.lower()
+        intent = classification.get("intent", "")
+
+        if any(kw in text for kw in ["list", "pending", "my reminders", "show reminders"]):
+            pending = self.scheduler.get_pending()
+            if not pending:
+                return "No pending reminders."
+            lines = []
+            for r in pending:
+                time_str = r.get("trigger_time", "")[:16].replace("T", " at ")
+                rec = f" (repeats {r['recurrence']})" if r.get("recurrence") else ""
+                lines.append(f"- {r['title']} — {time_str}{rec} [ID: {r['id']}]")
+            return f"Pending reminders ({len(pending)}):\n" + "\n".join(lines)
+
+        elif any(kw in text for kw in ["cancel", "delete", "remove"]):
+            import re
+            m = re.search(r'(?:cancel|delete|remove)\s+(?:reminder\s+)?([a-f0-9]+)', text)
+            if m:
+                rid = m.group(1)
+                success = self.scheduler.cancel_reminder(rid)
+                return f"Reminder cancelled." if success else f"Reminder {rid} not found."
+            return "Which reminder should I cancel? Provide the reminder ID."
+
+        else:
+            # Create a new reminder
+            from scheduler import parse_reminder_from_text
+            parsed = parse_reminder_from_text(user_input)
+            reminder = self.scheduler.create_reminder(
+                title=parsed["title"] or user_input,
+                trigger_time=parsed["trigger_time"],
+                recurrence=parsed.get("recurrence"),
+            )
+            time_str = reminder.trigger_time[:16].replace("T", " at ")
+            rec_str = f" (repeating {reminder.recurrence})" if reminder.recurrence else ""
+            return f"Reminder set: \"{reminder.title}\" — {time_str}{rec_str}"
+
+    # ─────────────────────────────────────────────
+    # HOME Handler - Smart home device control
+    # ─────────────────────────────────────────────
+    async def _handle_home(self, user_input: str, classification: dict) -> str:
+        """Handle smart home commands."""
+        if not self.smarthome:
+            return "Smart home module not available. Make sure smarthome.py is in the src/ directory."
+
+        text = user_input.lower()
+        import re
+
+        # Status check
+        if any(kw in text for kw in ["status", "summary", "how is", "what's the"]):
+            return await self.smarthome.get_status_summary()
+
+        # Scene activation
+        scene_match = re.search(r'(?:activate|set|start)\s+(?:scene\s+)?(\w+(?:\s+\w+)?)\s+scene', text)
+        if not scene_match:
+            scene_match = re.search(r'scene\s+(\w+(?:\s+\w+)?)', text)
+        if scene_match:
+            return await self.smarthome.activate_scene(scene_match.group(1).replace(" ", "_"))
+
+        # Temperature
+        temp_match = re.search(r'(?:set\s+)?(?:temperature|thermostat|temp)\s+(?:to\s+)?(\d+)', text)
+        if temp_match:
+            return await self.smarthome.set_temperature(float(temp_match.group(1)))
+
+        # Lock/unlock
+        if "unlock" in text:
+            door = "front_door"
+            if "garage" in text:
+                door = "garage"
+            elif "back" in text:
+                door = "back_door"
+            return await self.smarthome.unlock_door(door)
+        elif "lock" in text:
+            door = "front_door"
+            if "garage" in text:
+                door = "garage"
+            elif "back" in text:
+                door = "back_door"
+            return await self.smarthome.lock_door(door)
+
+        # Brightness
+        bright_match = re.search(r'(?:brightness|dim)\s+(?:to\s+)?(\d+)', text)
+        if bright_match:
+            device = "light.living_room"
+            if "bedroom" in text:
+                device = "light.bedroom"
+            elif "kitchen" in text:
+                device = "light.kitchen"
+            return await self.smarthome.set_brightness(device, int(bright_match.group(1)))
+
+        # Turn on/off
+        if "turn off" in text or "switch off" in text:
+            device = self._extract_device_name(text)
+            return await self.smarthome.turn_off(device)
+        elif "turn on" in text or "switch on" in text:
+            device = self._extract_device_name(text)
+            return await self.smarthome.turn_on(device)
+
+        # Fallback — list devices
+        return await self.smarthome.get_status_summary()
+
+    @staticmethod
+    def _extract_device_name(text: str) -> str:
+        """Extract device name from natural language command."""
+        import re
+        m = re.search(r'(?:turn\s+(?:on|off)|switch\s+(?:on|off))\s+(?:the\s+)?(.+?)(?:\s+light|\s+fan|\s+switch)?$', text.lower())
+        if m:
+            name = m.group(1).strip()
+            # Map common names to entity IDs
+            name_map = {
+                "living room": "light.living_room",
+                "bedroom": "light.bedroom",
+                "kitchen": "light.kitchen",
+                "fan": "switch.fan",
+                "ceiling fan": "switch.fan",
+            }
+            return name_map.get(name, name)
+        return "light.living_room"
 
 
 # ─────────────────────────────────────────────

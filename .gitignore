@@ -6,6 +6,8 @@
 config/pii_mappings.json
 google_credentials.json
 google_token.json
+spotify_token.json
+reminders.json
 
 # Python
 __pycache__/

@@ -96,7 +96,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "X-API-Key", "Content-Type"],
 )
 
@@ -199,26 +199,22 @@ class CalendarEventRequest(BaseModel):
     timezone: Optional[str] = "America/Chicago"
 
 
+class ReminderRequest(BaseModel):
+    title: str
+    trigger_time: Optional[str] = None
+    minutes: Optional[int] = None
+    hours: Optional[int] = None
+    days: Optional[int] = None
+    recurrence: Optional[str] = None
+
+
+class SmartHomeCommandRequest(BaseModel):
+    action: str  # turn_on, turn_off, set_temperature, lock, unlock, brightness, scene, status
+    device: Optional[str] = ""
+    value: Optional[str] = ""
+
+
 # ── Core ─────────────────────────────────────
-@app.get("/health")
-async def health_check():
-    """Health check — includes service statuses for dashboard."""
-    ollama_ok = await agent.ollama.is_available()
-    kb_entries = agent.knowledge.get_stats().get("entries", 0) if agent.knowledge else 0
-    projects_count = len(agent.build_pipeline.list_projects()) if agent.build_pipeline else 0
-    return {
-        "status": "online",
-        "agent_name": Config.AGENT_NAME,
-        "is_awake": agent.is_awake,
-        "services": {
-            "ollama": "online" if ollama_ok else "offline",
-            "claude": "configured" if Config.ANTHROPIC_API_KEY else "not configured",
-            "codegen": "ready" if agent.build_pipeline else "not loaded",
-            "knowledge_base": {"entries": kb_entries},
-        },
-        "stats": {"projects_built": projects_count, "pending_tasks": len(agent.tasks.get_pending())},
-        "timestamp": datetime.now().isoformat(),
-    }
 
 @app.get("/health/detail", dependencies=[Depends(require_api_key)])
 async def health_detail():
@@ -412,6 +408,244 @@ async def get_tasks():
         td.pop("raw_input", None)
         safe_tasks.append(td)
     return {"tasks": safe_tasks}
+
+
+# ── Spotify / Music ──────────────────────────
+@app.get("/spotify/status")
+async def spotify_status():
+    """Check Spotify configuration and auth status."""
+    try:
+        from music import SpotifyPlayer
+        player = SpotifyPlayer()
+        return {
+            "configured": player.auth.is_configured(),
+            "authenticated": player.auth.is_authenticated,
+        }
+    except ImportError:
+        return {"configured": False, "authenticated": False}
+
+@app.get("/spotify/auth")
+async def spotify_auth():
+    """Start Spotify OAuth flow — redirect user to Spotify login."""
+    try:
+        from music import SpotifyPlayer
+        player = SpotifyPlayer()
+        if not player.auth.is_configured():
+            return HTMLResponse("<h2>Spotify not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env</h2>")
+        auth_url = player.auth.get_auth_url()
+        return HTMLResponse(f'<html><body style="background:#050508;color:#e0e0f0;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;">'
+                          f'<a href="{auth_url}" style="padding:16px 32px;background:linear-gradient(135deg,#1DB954,#1ed760);color:#000;text-decoration:none;border-radius:40px;font-size:1.2rem;font-weight:700;">Connect Spotify</a>'
+                          f'</body></html>')
+    except ImportError:
+        return HTMLResponse("<h2>Music module not available</h2>")
+
+@app.get("/spotify/callback")
+async def spotify_callback(code: str = ""):
+    """Spotify OAuth callback — exchanges code for token."""
+    if not code:
+        return HTMLResponse("<h2>No authorization code received</h2>")
+    try:
+        from music import SpotifyPlayer
+        player = SpotifyPlayer()
+        success = await player.auth.exchange_code(code)
+        if success:
+            return HTMLResponse('<html><body style="background:#050508;color:#40e080;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;font-size:1.5rem;">'
+                              'Spotify connected! You can close this tab.</body></html>')
+        return HTMLResponse('<html><body style="background:#050508;color:#e04060;font-family:sans-serif;text-align:center;padding:60px;">'
+                          '<h2>Authentication failed</h2><p>Check your Spotify credentials in .env</p></body></html>')
+    except ImportError:
+        return HTMLResponse("<h2>Music module not available</h2>")
+
+@app.get("/spotify/now-playing", dependencies=[Depends(require_api_key)])
+async def spotify_now_playing():
+    """Get currently playing track."""
+    if agent.spotify:
+        return await agent.spotify.now_playing()
+    return {"is_playing": False, "track": None}
+
+@app.post("/spotify/play", dependencies=[Depends(require_api_key)])
+async def spotify_play(query: Optional[str] = None):
+    """Play music or search and play a track."""
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    if query:
+        results = await agent.spotify.search(query, "track", 1)
+        if results:
+            return {"status": "ok", "message": await agent.spotify.play(uri=results[0]["uri"])}
+        return {"status": "error", "message": f"No results for '{query}'"}
+    return {"status": "ok", "message": await agent.spotify.play()}
+
+@app.post("/spotify/pause", dependencies=[Depends(require_api_key)])
+async def spotify_pause():
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.pause()}
+
+@app.post("/spotify/next", dependencies=[Depends(require_api_key)])
+async def spotify_next():
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.next_track()}
+
+@app.get("/spotify/playlists", dependencies=[Depends(require_api_key)])
+async def spotify_playlists():
+    if not agent.spotify:
+        return {"playlists": []}
+    return {"playlists": await agent.spotify.get_playlists()}
+
+
+# ── Reminders / Scheduler ────────────────────
+@app.post("/reminders", dependencies=[Depends(require_api_key)])
+async def create_reminder(request: ReminderRequest):
+    """Create a reminder."""
+    if not agent.scheduler:
+        raise HTTPException(status_code=503, detail="Scheduler not available")
+    if request.trigger_time:
+        reminder = agent.scheduler.create_reminder(
+            title=request.title,
+            trigger_time=request.trigger_time,
+            recurrence=request.recurrence,
+        )
+    else:
+        reminder = agent.scheduler.create_reminder_relative(
+            title=request.title,
+            minutes=request.minutes or 0,
+            hours=request.hours or 0,
+            days=request.days or 0,
+        )
+    from dataclasses import asdict
+    return {"status": "ok", "reminder": asdict(reminder)}
+
+@app.get("/reminders", dependencies=[Depends(require_api_key)])
+async def list_reminders():
+    """List all reminders."""
+    if not agent.scheduler:
+        return {"reminders": []}
+    return {"reminders": agent.scheduler.get_all()}
+
+@app.get("/reminders/pending", dependencies=[Depends(require_api_key)])
+async def pending_reminders():
+    """List pending reminders."""
+    if not agent.scheduler:
+        return {"reminders": []}
+    return {"reminders": agent.scheduler.get_pending()}
+
+@app.delete("/reminders/{reminder_id}", dependencies=[Depends(require_api_key)])
+async def cancel_reminder(reminder_id: str):
+    if not agent.scheduler:
+        raise HTTPException(status_code=503, detail="Scheduler not available")
+    success = agent.scheduler.cancel_reminder(reminder_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    return {"status": "cancelled"}
+
+@app.get("/reminders/check", dependencies=[Depends(require_api_key)])
+async def check_reminders():
+    """Check for due reminders and trigger them."""
+    if not agent.scheduler:
+        return {"triggered": []}
+    triggered = await agent.scheduler.check_and_trigger()
+    from dataclasses import asdict
+    return {"triggered": [asdict(r) for r in triggered]}
+
+
+# ── Smart Home ───────────────────────────────
+@app.get("/smarthome/devices", dependencies=[Depends(require_api_key)])
+async def smarthome_devices():
+    """Get all smart home devices."""
+    if not agent.smarthome:
+        raise HTTPException(status_code=503, detail="Smart home not available")
+    devices = await agent.smarthome.get_all_devices()
+    return {"devices": devices}
+
+@app.get("/smarthome/status", dependencies=[Depends(require_api_key)])
+async def smarthome_status():
+    """Get smart home status summary."""
+    if not agent.smarthome:
+        return {"status": "not configured", "summary": "Smart home module not connected."}
+    summary = await agent.smarthome.get_status_summary()
+    configured = agent.smarthome.ha.is_configured()
+    return {"status": "connected" if configured else "simulated", "summary": summary}
+
+@app.post("/smarthome/command", dependencies=[Depends(require_api_key)])
+async def smarthome_command(request: SmartHomeCommandRequest):
+    """Execute a smart home command."""
+    if not agent.smarthome:
+        raise HTTPException(status_code=503, detail="Smart home not available")
+
+    action = request.action
+    device = request.device
+    value = request.value
+
+    if action == "turn_on":
+        result = await agent.smarthome.turn_on(device)
+    elif action == "turn_off":
+        result = await agent.smarthome.turn_off(device)
+    elif action == "set_temperature":
+        result = await agent.smarthome.set_temperature(float(value))
+    elif action == "lock":
+        result = await agent.smarthome.lock_door(device or "front_door")
+    elif action == "unlock":
+        result = await agent.smarthome.unlock_door(device or "front_door")
+    elif action == "brightness":
+        result = await agent.smarthome.set_brightness(device, int(value or 100))
+    elif action == "scene":
+        result = await agent.smarthome.activate_scene(value or device)
+    elif action == "status":
+        result = await agent.smarthome.get_status_summary()
+    else:
+        result = f"Unknown action: {action}"
+
+    return {"status": "ok", "result": result}
+
+
+# ── Enhanced health check with new services ──
+@app.get("/health")
+async def health_check_v2():
+    """Health check — includes all service statuses for dashboard."""
+    ollama_ok = await agent.ollama.is_available()
+    kb_entries = agent.knowledge.get_stats().get("entries", 0) if agent.knowledge else 0
+    projects_count = len(agent.build_pipeline.list_projects()) if agent.build_pipeline else 0
+
+    # Check for due reminders while we're at it
+    if agent.scheduler:
+        try:
+            await agent.scheduler.check_and_trigger()
+        except Exception:
+            pass
+
+    spotify_status = "not configured"
+    if agent.spotify:
+        if agent.spotify.auth.is_authenticated:
+            spotify_status = "connected"
+        elif agent.spotify.auth.is_configured():
+            spotify_status = "not authenticated"
+
+    smarthome_status = "not configured"
+    if agent.smarthome:
+        smarthome_status = "connected" if agent.smarthome.ha.is_configured() else "simulated"
+
+    pending_reminders = len(agent.scheduler.get_pending()) if agent.scheduler else 0
+
+    return {
+        "status": "online",
+        "agent_name": Config.AGENT_NAME,
+        "is_awake": agent.is_awake,
+        "services": {
+            "ollama": "online" if ollama_ok else "offline",
+            "claude": "configured" if Config.ANTHROPIC_API_KEY else "not configured",
+            "codegen": "ready" if agent.build_pipeline else "not loaded",
+            "knowledge_base": {"entries": kb_entries},
+            "spotify": spotify_status,
+            "smarthome": smarthome_status,
+        },
+        "stats": {
+            "projects_built": projects_count,
+            "pending_tasks": len(agent.tasks.get_pending()),
+            "pending_reminders": pending_reminders,
+        },
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 # ── Global error handler — never leak internals ──
