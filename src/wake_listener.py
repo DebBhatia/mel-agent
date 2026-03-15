@@ -15,6 +15,8 @@ import os
 import asyncio
 import logging
 import tempfile
+from datetime import datetime
+from enum import Enum
 import numpy as np
 from pathlib import Path
 
@@ -27,7 +29,6 @@ logger = logging.getLogger("wake_listener")
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-WAKE_PHRASE = os.getenv("WAKE_PHRASE", "wake up daddy is home")
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1280  # 80ms at 16kHz
 SILENCE_THRESHOLD = 500
@@ -37,48 +38,71 @@ ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8000")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 TTS_ENGINE = os.getenv("TTS_ENGINE", "piper")  # piper (local) or elevenlabs (cloud)
 PIPER_MODEL = os.getenv("PIPER_MODEL", "en_US-lessac-medium.onnx")
+USER_NAME = os.getenv("USER_NAME", "Deb")
+TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+
+
+class WakeMode(Enum):
+    """Which wake word was spoken determines the interaction mode."""
+    HOMECOMING = "homecoming"  # "wake up daddy is home" → greeting + calendar
+    COMMAND = "command"        # "Mel" → ready for any command
 
 
 class WakeWordDetector:
     """
-    Detects custom wake word using OpenWakeWord.
+    Detects two wake words using OpenWakeWord:
+      1. "wake up daddy is home" → homecoming greeting + calendar briefing
+      2. "Mel" → standard command mode
+
     Runs entirely locally - no audio sent anywhere.
     """
+
+    # Map OpenWakeWord model names → our WakeMode
+    # "hey_jarvis" is closest built-in to "wake up daddy is home"
+    # "alexa" is closest built-in to short name "Mel"
+    # Replace these with custom-trained models for better accuracy
+    WAKE_MODELS = {
+        "hey_jarvis": WakeMode.HOMECOMING,
+        "alexa": WakeMode.COMMAND,
+    }
 
     def __init__(self):
         self.model = None
         self.is_listening = True
 
     def initialize(self):
-        """Load the wake word model."""
+        """Load the wake word models."""
         try:
             from openwakeword.model import Model
-            # Use pre-trained model or train custom one
             self.model = Model(
-                wakeword_models=["hey_jarvis"],  # Closest built-in, or use custom
+                wakeword_models=list(self.WAKE_MODELS.keys()),
                 inference_framework="onnx",
             )
-            logger.info("Wake word model loaded successfully")
+            logger.info(
+                f"Wake word models loaded: {list(self.WAKE_MODELS.keys())}"
+            )
         except ImportError:
             logger.warning(
                 "OpenWakeWord not installed. Install with: "
                 "pip install openwakeword"
             )
-            # Fallback: simple keyword detection via STT
             self.model = None
 
-    def detect(self, audio_chunk: np.ndarray) -> bool:
-        """Check if wake word was spoken. Returns True if detected."""
+    def detect(self, audio_chunk: np.ndarray) -> WakeMode | None:
+        """
+        Check if any wake word was spoken.
+        Returns WakeMode if detected, None otherwise.
+        """
         if self.model is None:
-            return False
+            return None
 
         prediction = self.model.predict(audio_chunk)
-        # Check all model scores
         for model_name, score in prediction.items():
-            if score > 0.5:  # Confidence threshold
-                logger.info(f"Wake word detected! (score: {score:.2f})")
-                return True
-        return False
+            if score > 0.5:
+                mode = self.WAKE_MODELS.get(model_name, WakeMode.COMMAND)
+                logger.info(f"Wake word '{model_name}' detected (score: {score:.2f}) → {mode.value} mode")
+                return mode
+        return None
 
 
 class AudioCapture:
@@ -321,10 +345,18 @@ class VoiceAgent:
                 audio_chunk = self.audio.read_chunk()
 
                 if not self.is_active:
-                    if self.wake_detector.detect(audio_chunk):
+                    wake_mode = self.wake_detector.detect(audio_chunk)
+                    if wake_mode is not None:
                         self.is_active = True
-                        await self.tts.speak("I'm here. What do you need?")
-                        await self._process_command()
+
+                        if wake_mode == WakeMode.HOMECOMING:
+                            # "Wake up daddy is home" → full greeting + calendar
+                            await self._homecoming_greeting()
+                        else:
+                            # "Mel" → ready for any command
+                            await self.tts.speak("I'm here. What do you need?")
+                            await self._process_command()
+
                         self.is_active = False
 
             except KeyboardInterrupt:
@@ -335,6 +367,109 @@ class VoiceAgent:
                 await asyncio.sleep(1)
 
         self.audio.stop()
+
+    def _get_time_greeting(self) -> tuple[str, str]:
+        """Return time-appropriate greeting and a friendly follow-up."""
+        hour = datetime.now().hour
+        if 5 <= hour < 12:
+            return "Good morning", "hope you had a great night"
+        elif 12 <= hour < 17:
+            return "Good afternoon", "hope your day is going well"
+        elif 17 <= hour < 21:
+            return "Good evening", "welcome home"
+        else:
+            return "Hey there", "burning the midnight oil I see"
+
+    async def _homecoming_greeting(self):
+        """
+        Full homecoming flow:
+        1. Greet Deb by name with time-appropriate message
+        2. Fetch today's calendar from the orchestrator
+        3. Read out the schedule
+        4. Stay in command mode so Deb can ask follow-ups
+        """
+        greeting, followup = self._get_time_greeting()
+        welcome = f"{greeting} {USER_NAME}, {followup}."
+
+        # Fetch today's calendar from the orchestrator
+        calendar_summary = await self._fetch_today_calendar()
+
+        if calendar_summary:
+            welcome += f" Do you want to know how your day looks like? Here's what I found. {calendar_summary}"
+        else:
+            welcome += " You have a clear schedule today. No appointments."
+
+        await self.tts.speak(welcome)
+
+        # Stay in command mode so they can ask follow-ups
+        await self.tts.speak("Is there anything else you need?")
+        await self._process_command()
+
+    async def _fetch_today_calendar(self) -> str:
+        """Ask the orchestrator for today's calendar events."""
+        import httpx
+        headers = {"Authorization": f"Bearer {AGENT_API_KEY}"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Use the calendar/events endpoint directly
+                resp = await client.get(
+                    f"{ORCHESTRATOR_URL}/calendar/events",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    events = data.get("result", data.get("events", []))
+                    if not events:
+                        return ""
+                    return self._format_calendar_events(events)
+                else:
+                    logger.warning(f"Calendar fetch returned {resp.status_code}")
+                    # Fallback: ask via natural language through /process
+                    resp = await client.post(
+                        f"{ORCHESTRATOR_URL}/process",
+                        json={"input": "What's on my calendar for today?"},
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        return resp.json().get("response", "")
+        except Exception as e:
+            logger.error(f"Calendar fetch failed: {e}")
+        return ""
+
+    @staticmethod
+    def _format_calendar_events(events) -> str:
+        """Format calendar events into a natural spoken summary."""
+        if isinstance(events, str):
+            return events
+
+        if not isinstance(events, list) or len(events) == 0:
+            return ""
+
+        lines = []
+        for event in events:
+            if isinstance(event, dict):
+                summary = event.get("summary", "Untitled event")
+                start = event.get("start", {})
+                time_str = start.get("dateTime", start.get("date", ""))
+                if "T" in time_str:
+                    try:
+                        dt = datetime.fromisoformat(time_str)
+                        time_str = dt.strftime("%-I:%M %p")
+                    except (ValueError, TypeError):
+                        pass
+                if time_str:
+                    lines.append(f"{summary} at {time_str}")
+                else:
+                    lines.append(summary)
+            elif isinstance(event, str):
+                lines.append(event)
+
+        count = len(lines)
+        if count == 1:
+            return f"You have one thing today: {lines[0]}."
+        else:
+            items = ", ".join(lines[:-1]) + f", and {lines[-1]}"
+            return f"You have {count} things today: {items}."
 
     async def _process_command(self):
         """Capture full voice command after wake word."""
