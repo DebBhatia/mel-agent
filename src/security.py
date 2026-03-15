@@ -390,6 +390,8 @@ class NetworkGuard:
         "www.googleapis.com",         # Google Calendar
         "oauth2.googleapis.com",      # Google OAuth
         "accounts.google.com",        # Google Auth
+        "api.spotify.com",            # Spotify playback
+        "accounts.spotify.com",       # Spotify auth
         "localhost",                   # Local services
         "127.0.0.1",                  # Local
     ]

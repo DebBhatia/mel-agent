@@ -17,3 +17,10 @@ twilio>=9.0.0
 chromadb>=0.5.0
 
 # Code Generation (no extra deps - uses Claude API via httpx)
+
+# Spotify Music (uses httpx — no extra deps, just needs SPOTIFY_CLIENT_ID/SECRET in .env)
+
+# Smart Home (Home Assistant REST API — uses httpx, no extra deps)
+# For MQTT support (optional): paho-mqtt>=2.0.0
+
+# Scheduler (no external deps — lightweight built-in scheduler)

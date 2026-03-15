@@ -749,6 +749,296 @@
     0% { transform: translateY(-100%); }
     100% { transform: translateY(100vh); }
   }
+
+  /* ── Voice Waveform Visualizer ──────── */
+  #voiceWaveformCanvas {
+    width: 100%;
+    height: 60px;
+    display: none;
+  }
+  .voice-bar.waveform-active #voiceWaveformCanvas { display: block; }
+  .voice-bar.waveform-active .voice-wave { display: none; }
+
+  /* ── Widget Grid (overview bottom) ──── */
+  .widget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .widget-card {
+    background: var(--surface);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .widget-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(160,64,224,0.4), transparent);
+  }
+  .widget-header {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .widget-header .w-icon { font-size: 0.9rem; }
+
+  /* ── Music Player Widget ─────────── */
+  .music-widget { min-height: 120px; }
+  .music-now-playing {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .music-album-art {
+    width: 64px; height: 64px;
+    border-radius: 10px;
+    background: var(--surface3);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .music-album-art img { width: 100%; height: 100%; object-fit: cover; }
+  .music-track-info { flex: 1; min-width: 0; }
+  .music-track-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .music-artist {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  .music-album {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    opacity: 0.7;
+  }
+  .music-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .music-btn {
+    background: rgba(30,185,84,0.1);
+    border: 1px solid rgba(30,185,84,0.2);
+    color: #1DB954;
+    border-radius: 50%;
+    width: 32px; height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+  }
+  .music-btn:hover { background: rgba(30,185,84,0.2); transform: scale(1.1); }
+  .music-btn.play-btn { width: 40px; height: 40px; font-size: 1.1rem; }
+  .music-progress {
+    flex: 1;
+    height: 3px;
+    background: var(--surface3);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 8px;
+  }
+  .music-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #1DB954, #1ed760);
+    border-radius: 2px;
+    transition: width 1s linear;
+  }
+  .music-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.55rem;
+    color: var(--text-dim);
+  }
+  .music-not-connected {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  .spotify-connect-btn {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 6px 16px;
+    background: #1DB954;
+    color: #000;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+  .spotify-connect-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+
+  /* ── Calendar Widget ──────────── */
+  .calendar-widget { min-height: 120px; }
+  .calendar-event-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+  .cal-event {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(12,12,24,0.4);
+    font-size: 0.78rem;
+  }
+  .cal-event-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--cyan);
+    min-width: 55px;
+    flex-shrink: 0;
+  }
+  .cal-event-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cal-event-dot {
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--cyan);
+    flex-shrink: 0;
+  }
+
+  /* ── Reminders Widget ─────────── */
+  .reminder-widget { min-height: 120px; }
+  .reminder-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+  .reminder-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(12,12,24,0.4);
+    font-size: 0.78rem;
+  }
+  .reminder-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--amber);
+    min-width: 55px;
+    flex-shrink: 0;
+  }
+  .reminder-title { flex: 1; }
+  .reminder-cancel {
+    background: none; border: none; color: var(--red); cursor: pointer;
+    font-size: 0.7rem; opacity: 0.5; transition: opacity 0.2s;
+  }
+  .reminder-cancel:hover { opacity: 1; }
+
+  /* ── Smart Home Page ──────────── */
+  .home-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .home-device-card {
+    background: var(--surface);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .home-device-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    transition: background 0.3s;
+  }
+  .home-device-card.device-on::before { background: linear-gradient(90deg, var(--green), transparent); }
+  .home-device-card.device-off::before { background: linear-gradient(90deg, var(--text-dim), transparent); }
+  .home-device-card:hover { transform: translateY(-2px); border-color: var(--border-glow); }
+  .home-device-icon { font-size: 1.6rem; margin-bottom: 8px; }
+  .home-device-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .home-device-state {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .home-device-card.device-on .home-device-state { color: var(--green); }
+  .home-device-card.device-off .home-device-state { color: var(--text-dim); }
+  .home-thermostat {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .home-temp-display {
+    font-size: 1.8rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--amber), var(--red));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .home-temp-btn {
+    background: var(--surface3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    width: 32px; height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: all 0.2s;
+  }
+  .home-temp-btn:hover { background: rgba(224,160,64,0.15); border-color: var(--amber); }
+
+  /* ── Smart Home Status Bar ──────── */
+  .home-status-bar {
+    display: flex;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    margin-bottom: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+  .home-status-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .home-status-item .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
 </style>
 </head>
 <body>
@@ -791,6 +1081,11 @@
     <div class="nav-icon" onclick="showPage('knowledge', this)">
       <span>🧠</span>
       <div class="tooltip">Knowledge</div>
+    </div>
+    <div class="nav-divider"></div>
+    <div class="nav-icon" onclick="showPage('smarthome', this)">
+      <span>🏠</span>
+      <div class="tooltip">Smart Home</div>
     </div>
     <div class="nav-divider"></div>
     <div class="nav-icon" onclick="showPage('devops', this)">
@@ -863,6 +1158,59 @@
         </div>
       </div>
 
+      <!-- Widgets Row: Calendar + Music + Reminders -->
+      <div class="widget-grid">
+
+        <!-- Calendar Widget -->
+        <div class="widget-card calendar-widget fade-up fade-up-d1">
+          <div class="widget-header"><span class="w-icon">📅</span> Today's Schedule</div>
+          <div class="calendar-event-list" id="calendarEvents">
+            <div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">Loading calendar...</div>
+          </div>
+        </div>
+
+        <!-- Music Player Widget -->
+        <div class="widget-card music-widget fade-up fade-up-d2">
+          <div class="widget-header"><span class="w-icon">🎵</span> Now Playing</div>
+          <div id="musicWidget">
+            <div class="music-not-connected" id="musicNotConnected">
+              <div>Spotify not connected</div>
+              <a href="/spotify/auth" class="spotify-connect-btn" id="spotifyConnectBtn" style="display:none;">Connect Spotify</a>
+            </div>
+            <div id="musicPlayer" style="display:none;">
+              <div class="music-now-playing">
+                <div class="music-album-art"><img id="musicAlbumArt" src="" alt=""></div>
+                <div class="music-track-info">
+                  <div class="music-track-name" id="musicTrackName">--</div>
+                  <div class="music-artist" id="musicArtist">--</div>
+                  <div class="music-album" id="musicAlbum"></div>
+                </div>
+              </div>
+              <div class="music-controls">
+                <button class="music-btn" onclick="spotifyCmd('prev')">⏮</button>
+                <button class="music-btn play-btn" onclick="spotifyCmd('toggle')" id="musicPlayBtn">▶</button>
+                <button class="music-btn" onclick="spotifyCmd('next')">⏭</button>
+                <div class="music-progress"><div class="music-progress-bar" id="musicProgress" style="width:0%"></div></div>
+                <span class="music-time" id="musicTime">0:00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reminders Widget -->
+        <div class="widget-card reminder-widget fade-up fade-up-d3">
+          <div class="widget-header"><span class="w-icon">⏰</span> Reminders</div>
+          <div class="reminder-list" id="reminderList">
+            <div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">No reminders set.</div>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:6px;">
+            <input type="text" id="quickReminderInput" placeholder="Quick reminder..." style="flex:1;background:rgba(8,8,16,0.6);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.7rem;outline:none;">
+            <button onclick="addQuickReminder()" style="background:linear-gradient(135deg,var(--amber),#c08020);border:none;padding:6px 12px;border-radius:8px;color:#000;font-family:'JetBrains Mono',monospace;font-size:0.65rem;font-weight:700;cursor:pointer;">ADD</button>
+          </div>
+        </div>
+
+      </div>
+
       <!-- Quick Terminal -->
       <div class="terminal-panel fade-up" style="height: clamp(360px, 48vh, 560px); margin-bottom: 24px;">
         <div class="terminal-header" style="display:flex;align-items:center;justify-content:space-between;">
@@ -876,6 +1224,7 @@
           </div>
         </div>
         <div id="voiceStatusBar" style="display:none;" class="voice-bar">
+          <canvas id="voiceWaveformCanvas" width="400" height="60"></canvas>
           <div class="voice-wave"><span></span><span></span><span></span><span></span><span></span></div>
           <span id="voiceStatusText">Mel is speaking...</span>
           <button onclick="stopSpeaking()" style="margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:0.7rem;letter-spacing:1px;">■ STOP</button>
@@ -1004,6 +1353,43 @@
         <div class="terminal-input">
           <input type="text" id="shellInput" placeholder="$ " onkeydown="if(event.key==='Enter')runShell()">
           <button onclick="runShell()">RUN</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════ Smart Home Page ══════ -->
+    <div id="page-smarthome" style="display:none;">
+      <div class="page-title">
+        <div class="glow-dot" style="background:var(--amber);box-shadow:0 0 8px var(--amber);"></div>
+        Smart Home Control
+      </div>
+
+      <!-- Status Bar -->
+      <div class="home-status-bar" id="homeStatusBar">
+        <div class="home-status-item"><div class="dot" style="background:var(--green);box-shadow:0 0 6px var(--green);"></div> <span id="homeStatusText">Loading...</span></div>
+      </div>
+
+      <!-- Device Grid -->
+      <div class="home-grid" id="homeDeviceGrid">
+        <!-- Devices populated by JS -->
+      </div>
+
+      <!-- Thermostat Control -->
+      <div class="glass-card" style="margin-top:16px;" id="thermostatCard">
+        <div style="font-size:0.95rem;font-weight:600;margin-bottom:14px;">Thermostat</div>
+        <div class="home-thermostat">
+          <button class="home-temp-btn" onclick="adjustTemp(-1)">-</button>
+          <div class="home-temp-display" id="thermostatDisplay">72°F</div>
+          <button class="home-temp-btn" onclick="adjustTemp(1)">+</button>
+        </div>
+      </div>
+
+      <!-- Scene Buttons -->
+      <div class="glass-card" style="margin-top:16px;">
+        <div style="font-size:0.95rem;font-weight:600;margin-bottom:14px;">Scenes</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;" id="homeScenes">
+          <button onclick="activateScene('movie_night')" class="example-pill" style="border-color:var(--purple);color:var(--purple);">🎬 Movie Night</button>
+          <button onclick="activateScene('good_morning')" class="example-pill" style="border-color:var(--amber);color:var(--amber);">🌅 Good Morning</button>
         </div>
       </div>
     </div>
@@ -1384,7 +1770,7 @@ function stopSpeaking() {
   document.getElementById('speakerBtn').classList.remove('speaking');
 }
 
-function setSpeakingState(speaking, text = 'Mel is speaking...') {
+function setSpeakingState(speaking, text = 'Mel is speaking...', audioElement = null) {
   isSpeaking = speaking;
   const bar = document.getElementById('voiceStatusBar');
   const btn = document.getElementById('speakerBtn');
@@ -1393,9 +1779,11 @@ function setSpeakingState(speaking, text = 'Mel is speaking...') {
     document.getElementById('voiceStatusText').textContent = text;
     btn.classList.add('speaking');
     if (window._setAICoreAwake) window._setAICoreAwake(true);
+    startWaveformVisualizer(audioElement);
   } else {
     bar.style.display = 'none';
     btn.classList.remove('speaking');
+    stopWaveformVisualizer();
   }
 }
 
@@ -1416,8 +1804,11 @@ async function speakResponse(text) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         currentAudio = new Audio(url);
+        currentAudio.crossOrigin = 'anonymous';
         currentAudio.onended = () => { setSpeakingState(false); URL.revokeObjectURL(url); currentAudio = null; };
         currentAudio.onerror = () => { setSpeakingState(false); speakBrowser(text); };
+        // Update speaking state with audio element for waveform visualization
+        setSpeakingState(true, 'Mel is speaking...', currentAudio);
         await currentAudio.play();
         return;
       }
@@ -1841,9 +2232,400 @@ function escAttr(s) {
 }
 
 // ═══════════════════════════════════════════
+// AI VOICE WAVEFORM VISUALIZER
+// ═══════════════════════════════════════════
+let waveformAnimFrame = null;
+let audioContext = null;
+let analyser = null;
+let waveformActive = false;
+
+function startWaveformVisualizer(audioElement) {
+  const canvas = document.getElementById('voiceWaveformCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const bar = document.getElementById('voiceStatusBar');
+
+  try {
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioElement && audioElement instanceof HTMLAudioElement) {
+      const source = audioContext.createMediaElementSource(audioElement);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+    }
+  } catch(e) {
+    // Fallback to synthetic waveform if audio capture fails
+    analyser = null;
+  }
+
+  bar.classList.add('waveform-active');
+  canvas.style.display = 'block';
+  canvas.width = canvas.parentElement.clientWidth || 400;
+  waveformActive = true;
+
+  function drawWaveform() {
+    if (!waveformActive) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const barCount = 64;
+    const barWidth = (w / barCount) * 0.7;
+    const gap = (w / barCount) * 0.3;
+
+    if (analyser) {
+      // Real audio frequency data
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
+      const step = Math.floor(dataArray.length / barCount);
+
+      for (let i = 0; i < barCount; i++) {
+        const val = dataArray[i * step] / 255;
+        const barH = val * h * 0.85 + 2;
+        const x = i * (barWidth + gap);
+        const y = (h - barH) / 2;
+
+        const gradient = ctx.createLinearGradient(x, y, x, y + barH);
+        gradient.addColorStop(0, `rgba(224, 64, 160, ${0.6 + val * 0.4})`);
+        gradient.addColorStop(0.5, `rgba(160, 64, 224, ${0.5 + val * 0.4})`);
+        gradient.addColorStop(1, `rgba(64, 216, 224, ${0.4 + val * 0.3})`);
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, barH, 2);
+        ctx.fill();
+      }
+    } else {
+      // Synthetic waveform when no audio source
+      const time = Date.now() / 1000;
+      for (let i = 0; i < barCount; i++) {
+        const t = i / barCount;
+        const wave1 = Math.sin(t * Math.PI * 4 + time * 5) * 0.3;
+        const wave2 = Math.sin(t * Math.PI * 8 + time * 3) * 0.2;
+        const wave3 = Math.sin(t * Math.PI * 2 + time * 7) * 0.15;
+        const envelope = Math.sin(t * Math.PI); // Bell curve
+        const val = (0.3 + wave1 + wave2 + wave3) * envelope;
+        const barH = Math.abs(val) * h * 0.85 + 2;
+        const x = i * (barWidth + gap);
+        const y = (h - barH) / 2;
+
+        const gradient = ctx.createLinearGradient(x, y, x, y + barH);
+        gradient.addColorStop(0, `rgba(224, 64, 160, ${0.4 + Math.abs(val) * 0.5})`);
+        gradient.addColorStop(0.5, `rgba(160, 64, 224, ${0.3 + Math.abs(val) * 0.5})`);
+        gradient.addColorStop(1, `rgba(64, 216, 224, ${0.2 + Math.abs(val) * 0.4})`);
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, barH, 2);
+        ctx.fill();
+      }
+    }
+
+    waveformAnimFrame = requestAnimationFrame(drawWaveform);
+  }
+  drawWaveform();
+}
+
+function stopWaveformVisualizer() {
+  waveformActive = false;
+  if (waveformAnimFrame) cancelAnimationFrame(waveformAnimFrame);
+  const bar = document.getElementById('voiceStatusBar');
+  if (bar) bar.classList.remove('waveform-active');
+  const canvas = document.getElementById('voiceWaveformCanvas');
+  if (canvas) canvas.style.display = 'none';
+  analyser = null;
+}
+
+
+// ═══════════════════════════════════════════
+// SPOTIFY / MUSIC PLAYER
+// ═══════════════════════════════════════════
+let spotifyPolling = null;
+
+async function checkSpotifyStatus() {
+  try {
+    const r = await fetch(`${API}/spotify/status`);
+    const d = await r.json();
+    if (d.authenticated) {
+      document.getElementById('musicNotConnected').style.display = 'none';
+      document.getElementById('musicPlayer').style.display = 'block';
+      updateNowPlaying();
+      if (!spotifyPolling) spotifyPolling = setInterval(updateNowPlaying, 5000);
+    } else if (d.configured) {
+      document.getElementById('spotifyConnectBtn').style.display = 'inline-block';
+    }
+  } catch(e) {}
+}
+
+async function updateNowPlaying() {
+  try {
+    const r = await fetch(`${API}/spotify/now-playing`, { headers: { 'X-API-Key': API_KEY } });
+    const d = await r.json();
+    if (d.track) {
+      document.getElementById('musicTrackName').textContent = d.track;
+      document.getElementById('musicArtist').textContent = d.artist || '';
+      document.getElementById('musicAlbum').textContent = d.album || '';
+      const art = document.getElementById('musicAlbumArt');
+      if (d.album_art) art.src = d.album_art;
+      else art.src = '';
+      document.getElementById('musicPlayBtn').textContent = d.is_playing ? '⏸' : '▶';
+      if (d.duration_ms > 0) {
+        const pct = (d.progress_ms / d.duration_ms * 100).toFixed(1);
+        document.getElementById('musicProgress').style.width = pct + '%';
+        const elapsed = Math.floor(d.progress_ms / 1000);
+        const total = Math.floor(d.duration_ms / 1000);
+        document.getElementById('musicTime').textContent =
+          `${Math.floor(elapsed/60)}:${String(elapsed%60).padStart(2,'0')} / ${Math.floor(total/60)}:${String(total%60).padStart(2,'0')}`;
+      }
+    } else {
+      document.getElementById('musicTrackName').textContent = 'Nothing playing';
+      document.getElementById('musicArtist').textContent = 'Open Spotify on a device';
+      document.getElementById('musicPlayBtn').textContent = '▶';
+    }
+  } catch(e) {}
+}
+
+async function spotifyCmd(action) {
+  try {
+    if (action === 'toggle') {
+      const btn = document.getElementById('musicPlayBtn');
+      if (btn.textContent === '⏸') {
+        await fetch(`${API}/spotify/pause`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+        btn.textContent = '▶';
+      } else {
+        await fetch(`${API}/spotify/play`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+        btn.textContent = '⏸';
+      }
+    } else if (action === 'next') {
+      await fetch(`${API}/spotify/next`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+    } else if (action === 'prev') {
+      // Use the process endpoint for previous since we don't have a dedicated endpoint
+      await fetch(`${API}/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+        body: JSON.stringify({ input: 'previous song' })
+      });
+    }
+    setTimeout(updateNowPlaying, 500);
+    addActivity(`Music: ${action}`, 'green');
+  } catch(e) {}
+}
+
+
+// ═══════════════════════════════════════════
+// CALENDAR WIDGET
+// ═══════════════════════════════════════════
+async function loadCalendarEvents() {
+  try {
+    const r = await fetch(`${API}/calendar/events`, { headers: { 'X-API-Key': API_KEY } });
+    const d = await r.json();
+    const el = document.getElementById('calendarEvents');
+
+    if (d.status === 'ok' && d.result) {
+      // Parse the text response from calendar plugin
+      const lines = (d.result || '').split('\n').filter(l => l.startsWith('-'));
+      if (lines.length > 0) {
+        el.innerHTML = lines.map(line => {
+          const text = line.replace(/^-\s*/, '');
+          const parts = text.split(' at ');
+          const title = parts[0] || text;
+          const time = parts[1] || '';
+          let displayTime = '';
+          if (time) {
+            try {
+              const dt = new Date(time);
+              displayTime = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            } catch(e) { displayTime = time.slice(11, 16); }
+          }
+          return `<div class="cal-event"><div class="cal-event-dot"></div><span class="cal-event-time">${escHtml(displayTime)}</span><span class="cal-event-title">${escHtml(title)}</span></div>`;
+        }).join('');
+      } else {
+        el.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">No events today. Your day is clear!</div>';
+      }
+    } else {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">Calendar not connected.</div>';
+    }
+  } catch(e) {
+    document.getElementById('calendarEvents').innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">Calendar not connected.</div>';
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// REMINDERS WIDGET
+// ═══════════════════════════════════════════
+async function loadReminders() {
+  try {
+    const r = await fetch(`${API}/reminders/pending`, { headers: { 'X-API-Key': API_KEY } });
+    const d = await r.json();
+    const el = document.getElementById('reminderList');
+
+    if (d.reminders && d.reminders.length > 0) {
+      el.innerHTML = d.reminders.map(rem => {
+        let timeStr = '';
+        if (rem.trigger_time) {
+          try {
+            const dt = new Date(rem.trigger_time);
+            const now = new Date();
+            const diff = dt - now;
+            if (diff > 0 && diff < 86400000) {
+              timeStr = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            } else {
+              timeStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+                        dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            }
+          } catch(e) { timeStr = rem.trigger_time.slice(0, 16); }
+        }
+        const recBadge = rem.recurrence ? ` <span style="font-size:0.55rem;color:var(--purple);">[${escHtml(rem.recurrence)}]</span>` : '';
+        return `<div class="reminder-item">
+          <span class="reminder-time">${escHtml(timeStr)}</span>
+          <span class="reminder-title">${escHtml(rem.title)}${recBadge}</span>
+          <button class="reminder-cancel" onclick="cancelReminder('${escAttr(rem.id)}')" title="Cancel">✕</button>
+        </div>`;
+      }).join('');
+    } else {
+      el.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">No reminders set.</div>';
+    }
+  } catch(e) {
+    document.getElementById('reminderList').innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">Scheduler not available.</div>';
+  }
+}
+
+async function addQuickReminder() {
+  const input = document.getElementById('quickReminderInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  try {
+    // Send to process endpoint so the NLP parser handles it
+    await fetch(`${API}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ input: `remind me ${text}` })
+    });
+    addActivity(`Reminder: ${text.slice(0, 30)}`, 'amber');
+    setTimeout(loadReminders, 500);
+  } catch(e) {}
+}
+
+async function cancelReminder(id) {
+  try {
+    await fetch(`${API}/reminders/${id}`, { method: 'DELETE', headers: { 'X-API-Key': API_KEY } });
+    addActivity('Reminder cancelled', 'amber');
+    loadReminders();
+  } catch(e) {}
+}
+
+
+// ═══════════════════════════════════════════
+// SMART HOME
+// ═══════════════════════════════════════════
+let currentThermostatTemp = 72;
+
+async function loadSmartHomeDevices() {
+  try {
+    const r = await fetch(`${API}/smarthome/devices`, { headers: { 'X-API-Key': API_KEY } });
+    const d = await r.json();
+    const grid = document.getElementById('homeDeviceGrid');
+    const statusBar = document.getElementById('homeStatusBar');
+
+    if (!d.devices || d.devices.length === 0) {
+      grid.innerHTML = '<div class="empty-state"><div class="icon">🏠</div><p>No smart home devices found.</p></div>';
+      return;
+    }
+
+    // Status summary
+    const r2 = await fetch(`${API}/smarthome/status`, { headers: { 'X-API-Key': API_KEY } });
+    const status = await r2.json();
+    document.getElementById('homeStatusText').textContent = status.summary || 'Connected';
+
+    const deviceIcons = {
+      light: '💡', switch: '🔌', climate: '🌡️', lock: '🔒',
+      scene: '🎬', fan: '🌀', cover: '🪟', media_player: '📺'
+    };
+
+    // Filter out scenes and climate (shown separately)
+    const controlDevices = d.devices.filter(dev => dev.type !== 'scene' && dev.type !== 'climate');
+
+    grid.innerHTML = controlDevices.map(dev => {
+      const icon = deviceIcons[dev.type] || '📱';
+      const isOn = dev.state === 'on' || dev.state === 'unlocked';
+      const stateClass = isOn ? 'device-on' : 'device-off';
+      const stateText = dev.state || 'unknown';
+      return `<div class="home-device-card ${stateClass}" onclick="toggleDevice('${escAttr(dev.entity_id)}', '${escAttr(dev.state)}')">
+        <div class="home-device-icon">${icon}</div>
+        <div class="home-device-name">${escHtml(dev.name)}</div>
+        <div class="home-device-state">${escHtml(stateText)}</div>
+      </div>`;
+    }).join('');
+
+    // Update thermostat
+    const thermostat = d.devices.find(dev => dev.type === 'climate');
+    if (thermostat) {
+      currentThermostatTemp = parseFloat(thermostat.temperature || thermostat.state || 72);
+      document.getElementById('thermostatDisplay').textContent = `${Math.round(currentThermostatTemp)}°F`;
+    }
+
+  } catch(e) {
+    document.getElementById('homeDeviceGrid').innerHTML = '<div class="empty-state"><div class="icon">🏠</div><p>Could not load devices.</p></div>';
+  }
+}
+
+async function toggleDevice(entityId, currentState) {
+  const action = (currentState === 'on' || currentState === 'unlocked') ? 'turn_off' : 'turn_on';
+  if (entityId.startsWith('lock.')) {
+    // Locks use lock/unlock
+    const lockAction = currentState === 'locked' ? 'unlock' : 'lock';
+    await fetch(`${API}/smarthome/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ action: lockAction, device: entityId })
+    });
+  } else {
+    await fetch(`${API}/smarthome/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ action, device: entityId })
+    });
+  }
+  addActivity(`Home: ${action.replace('_', ' ')} ${entityId.split('.')[1]}`, 'amber');
+  setTimeout(loadSmartHomeDevices, 300);
+}
+
+async function adjustTemp(delta) {
+  currentThermostatTemp += delta;
+  document.getElementById('thermostatDisplay').textContent = `${Math.round(currentThermostatTemp)}°F`;
+  await fetch(`${API}/smarthome/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    body: JSON.stringify({ action: 'set_temperature', value: String(currentThermostatTemp) })
+  });
+}
+
+async function activateScene(scene) {
+  await fetch(`${API}/smarthome/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    body: JSON.stringify({ action: 'scene', value: scene })
+  });
+  addActivity(`Scene activated: ${scene}`, 'purple');
+}
+
+
+// ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 loadProjects();
+checkSpotifyStatus();
+loadCalendarEvents();
+loadReminders();
+loadSmartHomeDevices();
+// Refresh widgets periodically
+setInterval(loadCalendarEvents, 60000);
+setInterval(loadReminders, 15000);
+setInterval(loadSmartHomeDevices, 30000);
 </script>
 </body>
 </html>
