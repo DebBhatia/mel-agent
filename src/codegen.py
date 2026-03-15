@@ -118,25 +118,25 @@ RULES:
 8. Always include a README.md with setup instructions
 
 RESPONSE FORMAT:
-Return a JSON object with this exact structure:
-{
-  "project_name": "descriptive-kebab-case-name",
-  "project_type": "html-site|react-app|python-script|python-app|api-server|dashboard|landing-page|component|automation|full-stack",
-  "description": "What this project does",
-  "files": [
-    {
-      "path": "relative/path/to/file.ext",
-      "content": "full file contents here",
-      "language": "html|css|js|jsx|python|json|markdown|yaml|shell",
-      "description": "What this file does"
-    }
-  ],
-  "setup_commands": ["npm install", "pip install -r requirements.txt"],
-  "run_command": "python app.py",
-  "dependencies": {"npm": ["react", "tailwindcss"], "pip": ["flask", "requests"]}
-}
+Use this exact delimiter format (NOT JSON for file contents — avoids escaping issues):
 
-IMPORTANT: Return ONLY the JSON object. No markdown, no backticks, no explanation outside the JSON."""
+<<<META>>>
+project_name: descriptive-kebab-case-name
+project_type: html-site|react-app|python-script|python-app|api-server|dashboard|landing-page|component|automation|full-stack
+description: What this project does
+setup_commands: npm install, pip install -r requirements.txt
+run_command: python app.py
+<<<END_META>>>
+
+<<<FILE: relative/path/to/file.ext | language: html | description: What this file does>>>
+full file contents go here — no escaping needed, any quotes or characters are fine
+<<<END_FILE>>>
+
+<<<FILE: another/file.py | language: python | description: Another file>>>
+more file contents
+<<<END_FILE>>>
+
+IMPORTANT: Use this exact format. Do NOT wrap in JSON. Do NOT use markdown code blocks."""
 
     def __init__(self):
         self.api_key = CodeGenConfig.ANTHROPIC_API_KEY
@@ -180,25 +180,98 @@ IMPORTANT: Return ONLY the JSON object. No markdown, no backticks, no explanatio
                 )
                 result = response.json()
                 raw_text = result["content"][0]["text"]
+                return self._parse_response(raw_text)
 
-                # Parse JSON from response (handle potential markdown wrapping)
-                cleaned = raw_text.strip()
-                if cleaned.startswith("```"):
-                    cleaned = re.sub(r"^```\w*\n?", "", cleaned)
-                    cleaned = re.sub(r"\n?```$", "", cleaned)
-
-                return json.loads(cleaned)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response as JSON: {e}")
-            # Try to extract JSON from the response
-            match = re.search(r'\{[\s\S]*\}', raw_text)
-            if match:
-                return json.loads(match.group())
-            raise
         except Exception as e:
             logger.error(f"Code generation failed: {e}")
             raise
+
+    @staticmethod
+    def _parse_response(raw_text: str) -> dict:
+        """Parse the delimiter-based response format. Falls back to JSON if needed."""
+        # Try delimiter format first
+        if "<<<META>>>" in raw_text and "<<<FILE:" in raw_text:
+            return CodeGenerator._parse_delimiter_format(raw_text)
+
+        # Fallback: try JSON (old format or if Claude ignored instructions)
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```\w*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned.strip())
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r'\{[\s\S]*?\}(?=\s*$)', cleaned)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+        raise ValueError(f"Could not parse code generation response. Raw:\n{raw_text[:500]}")
+
+    @staticmethod
+    def _parse_delimiter_format(raw_text: str) -> dict:
+        """Parse the <<<META>>>...<<<FILE:...>>> delimiter format."""
+        result = {
+            "project_name": "generated-project",
+            "project_type": "html-site",
+            "description": "",
+            "files": [],
+            "setup_commands": [],
+            "run_command": "",
+            "dependencies": {},
+        }
+
+        # Parse META block
+        meta_match = re.search(r'<<<META>>>([\s\S]*?)<<<END_META>>>', raw_text)
+        if meta_match:
+            for line in meta_match.group(1).strip().splitlines():
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key, val = key.strip(), val.strip()
+                    if key == "project_name":
+                        result["project_name"] = val
+                    elif key == "project_type":
+                        result["project_type"] = val
+                    elif key == "description":
+                        result["description"] = val
+                    elif key == "setup_commands":
+                        result["setup_commands"] = [c.strip() for c in val.split(",") if c.strip()]
+                    elif key == "run_command":
+                        result["run_command"] = val
+
+        # Parse FILE blocks
+        for file_match in re.finditer(
+            r'<<<FILE:\s*([^|>]+?)(?:\s*\|\s*language:\s*([^|>]+?))?(?:\s*\|\s*description:\s*([^>]+?))?\s*>>>([\s\S]*?)<<<END_FILE>>>',
+            raw_text
+        ):
+            path = file_match.group(1).strip()
+            language = (file_match.group(2) or "").strip()
+            description = (file_match.group(3) or "").strip()
+            content = file_match.group(4)
+            # Strip exactly one leading newline (formatting artifact)
+            if content.startswith("\n"):
+                content = content[1:]
+            if content.endswith("\n"):
+                content = content[:-1]
+
+            if not language:
+                ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+                language = {"html": "html", "css": "css", "js": "js", "jsx": "jsx",
+                            "py": "python", "md": "markdown", "json": "json",
+                            "yaml": "yaml", "yml": "yaml", "sh": "shell"}.get(ext, "text")
+
+            result["files"].append({
+                "path": path,
+                "content": content,
+                "language": language,
+                "description": description,
+            })
+
+        if not result["files"]:
+            raise ValueError("No files found in delimiter-format response")
+
+        return result
 
     async def refine(self, project: Project, feedback: str) -> dict:
         """Iterate on an existing project based on feedback."""
