@@ -18,9 +18,11 @@ import re
 import secrets
 import logging
 import uvicorn
+from dotenv import load_dotenv
+load_dotenv(override=True)
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional
@@ -100,6 +102,12 @@ app.add_middleware(
 
 agent = AgentOrchestrator()
 
+# Auto-wake on startup so Mel is always ready
+@app.on_event("startup")
+async def startup_wake():
+    await agent.wake_up()
+    logger.info("✅ Mel auto-woke on startup")
+
 # ── Rate Limiting ──────────────────────────────
 try:
     from security import RateLimiter
@@ -134,11 +142,23 @@ async def serve_dashboard():
     dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
     if os.path.exists(dashboard_path):
         with open(dashboard_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            content = f.read()
+        # Inject API key so dashboard can authenticate without user input
+        content = content.replace(
+            "const API = window.location.origin;",
+            f"const API = window.location.origin;\nconst API_KEY = '{AGENT_API_KEY}';"
+        )
+        return HTMLResponse(content=content, headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        })
     return HTMLResponse(content="<h1>Dashboard not found. Place dashboard.html in the src/ folder.</h1>")
 
 
 # ── Request / Response Models ────────────────
+class TTSRequest(BaseModel):
+    text: str
+
 class ProcessRequest(BaseModel):
     input: str
     context: dict = {}
@@ -182,11 +202,21 @@ class CalendarEventRequest(BaseModel):
 # ── Core ─────────────────────────────────────
 @app.get("/health")
 async def health_check():
-    """Minimal health check — no sensitive details unless authenticated."""
+    """Health check — includes service statuses for dashboard."""
+    ollama_ok = await agent.ollama.is_available()
+    kb_entries = agent.knowledge.get_stats().get("entries", 0) if agent.knowledge else 0
+    projects_count = len(agent.build_pipeline.list_projects()) if agent.build_pipeline else 0
     return {
         "status": "online",
         "agent_name": Config.AGENT_NAME,
         "is_awake": agent.is_awake,
+        "services": {
+            "ollama": "online" if ollama_ok else "offline",
+            "claude": "configured" if Config.ANTHROPIC_API_KEY else "not configured",
+            "codegen": "ready" if agent.build_pipeline else "not loaded",
+            "knowledge_base": {"entries": kb_entries},
+        },
+        "stats": {"projects_built": projects_count, "pending_tasks": len(agent.tasks.get_pending())},
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -226,6 +256,44 @@ async def wake_agent():
 @app.post("/sleep", dependencies=[Depends(require_api_key)])
 async def sleep_agent():
     return {"status": "sleeping", "message": await agent.sleep()}
+
+@app.post("/tts", dependencies=[Depends(require_api_key)])
+async def text_to_speech(request: TTSRequest):
+    """Convert text to speech via ElevenLabs. Returns audio/mpeg."""
+    import httpx
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 2000:
+        text = text[:2000]
+
+    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
+
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ElevenLabs not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+                json={
+                    "text": text,
+                    "model_id": "eleven_turbo_v2_5",
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.85, "style": 0.2, "use_speaker_boost": True}
+                },
+            )
+            if resp.status_code == 200:
+                return Response(content=resp.content, media_type="audio/mpeg")
+            raise HTTPException(status_code=resp.status_code, detail=f"ElevenLabs error: {resp.text[:200]}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="TTS request timed out")
+
+@app.get("/tts/config")
+async def tts_config():
+    """Tell the dashboard whether ElevenLabs is configured."""
+    return {"elevenlabs": bool(os.getenv("ELEVENLABS_API_KEY", ""))}
 
 
 # ── Code Generation ──────────────────────────

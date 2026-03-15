@@ -33,6 +33,8 @@ class Config:
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
     WAKE_PHRASE = os.getenv("WAKE_PHRASE", "wake up daddy is home")
     AGENT_NAME = os.getenv("AGENT_NAME", "Mel")
+    USER_NAME = os.getenv("USER_NAME", "Deb")
+    TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
 
 
 # ─────────────────────────────────────────────
@@ -265,19 +267,81 @@ class ClaudeClient:
             self.audit = None
             self.enhanced_sanitizer = None
 
+    def _mel_system_prompt(self) -> str:
+        """Build Mel's persona system prompt with live context."""
+        try:
+            import pytz
+            tz = pytz.timezone(Config.TIMEZONE)
+            now = datetime.now(tz)
+        except Exception:
+            now = datetime.now()
+        time_str = now.strftime("%I:%M %p on %A, %B %d, %Y %Z").lstrip("0")
+        return (
+            f"You are {Config.AGENT_NAME}, a smart, warm, and highly capable personal AI assistant "
+            f"for {Config.USER_NAME}. You speak naturally and conversationally — like a trusted "
+            f"professional who genuinely cares. Be concise unless detail is requested. "
+            f"Never say you lack access to real-time info — you are given live context. "
+            f"Current date and time: {time_str}. "
+            f"Address the user as {Config.USER_NAME} when appropriate."
+        )
+
+    async def converse(self, user_message: str, extra_context: str = "") -> str:
+        """Conversational response as Mel — the primary chat method."""
+        if not self.api_key:
+            return "Claude API key not configured."
+
+        safe_msg = self.sanitizer.sanitize(user_message)
+        if self.enhanced_sanitizer:
+            safe_msg = self.enhanced_sanitizer.sanitize(safe_msg)
+
+        if self.audit:
+            self.audit.log_api_call(
+                service="claude",
+                endpoint="https://api.anthropic.com/v1/messages",
+                data_sent_preview=f"Chat: {safe_msg[:200]}"
+            )
+
+        content = safe_msg
+        if extra_context:
+            content = f"{extra_context}\n\n{safe_msg}"
+
+        headers = {
+            "x-api-key": self.api_key,
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "system": self._mel_system_prompt(),
+            "messages": [{"role": "user", "content": content}],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
+                )
+                result = response.json()
+                raw_response = result["content"][0]["text"]
+                return self.sanitizer.desanitize(raw_response)
+        except Exception as e:
+            logger.error(f"Claude API error: {e}")
+            return "I'm having trouble reaching my cloud brain right now. Try again in a moment."
+
     async def reason(self, task_description: str, context: str = "") -> str:
-        """Send sanitized request to Claude for complex reasoning."""
+        """Send sanitized request to Claude for complex reasoning / planning."""
         if not self.api_key:
             return "Claude API key not configured. Using local model only."
 
-        # SECURITY: Sanitize before sending (both layers)
         safe_description = self.sanitizer.sanitize(task_description)
         safe_context = self.sanitizer.sanitize(context)
         if self.enhanced_sanitizer:
             safe_description = self.enhanced_sanitizer.sanitize(safe_description)
             safe_context = self.enhanced_sanitizer.sanitize(safe_context)
 
-        # AUDIT: Log what's being sent to the cloud
         if self.audit:
             self.audit.log_api_call(
                 service="claude",
@@ -290,13 +354,10 @@ class ClaudeClient:
             "content-type": "application/json",
             "anthropic-version": "2023-06-01",
         }
-
         payload = {
             "model": self.model,
             "max_tokens": 2048,
-            "system": f"You are a task planner for a personal AI agent named {Config.AGENT_NAME}. "
-                      "Generate actionable step-by-step plans. Be specific and concise. "
-                      "Never ask for personal information - work with what's provided.",
+            "system": self._mel_system_prompt(),
             "messages": [
                 {"role": "user", "content": f"Task: {safe_description}\nContext: {safe_context}"}
             ],
@@ -311,7 +372,6 @@ class ClaudeClient:
                 )
                 result = response.json()
                 raw_response = result["content"][0]["text"]
-                # SECURITY: Restore PII only in local response
                 return self.sanitizer.desanitize(raw_response)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
@@ -430,19 +490,29 @@ class AgentOrchestrator:
         """Activate the agent."""
         self.is_awake = True
         logger.info(f"🟢 {Config.AGENT_NAME} is awake and ready!")
+        return self._build_greeting()
 
-        # Check system status
-        ollama_ok = await self.ollama.is_available()
-        claude_ok = bool(Config.ANTHROPIC_API_KEY)
+    def _build_greeting(self) -> str:
+        """Generate a natural, time-appropriate greeting for the user."""
+        try:
+            import pytz
+            tz = pytz.timezone(Config.TIMEZONE)
+            hour = datetime.now(tz).hour
+        except Exception:
+            hour = datetime.now().hour
 
-        status = []
-        status.append(f"Local AI (Ollama): {'✅ Online' if ollama_ok else '❌ Offline'}")
-        status.append(f"Cloud AI (Claude): {'✅ Ready' if claude_ok else '⚠️ No API key'}")
-        status.append(f"Code Engine: {'✅ Ready' if self.build_pipeline else '❌ Not loaded'}")
-        status.append(f"Knowledge Base: {'✅ ' + str(self.knowledge.get_stats().get('entries', 0)) + ' memories' if self.knowledge else '❌ Not loaded'}")
-        status.append(f"Pending tasks: {len(self.tasks.get_pending())}")
+        name = Config.USER_NAME
 
-        return f"Good to see you! {Config.AGENT_NAME} is online.\n" + "\n".join(status)
+        if 5 <= hour < 12:
+            greeting = f"Good morning, {name}. I hope you had a wonderful night's rest."
+        elif 12 <= hour < 17:
+            greeting = f"Good afternoon, {name}. I hope your day is going well."
+        elif 17 <= hour < 21:
+            greeting = f"Good evening, {name}. Welcome home — it's great to have you back."
+        else:
+            greeting = f"Hey {name}, burning the midnight oil tonight? I'm here whenever you need me."
+
+        return f"{greeting} How can I help you?"
 
     async def sleep(self):
         """Deactivate the agent."""
@@ -453,8 +523,24 @@ class AgentOrchestrator:
     async def process(self, user_input: str) -> str:
         """Main processing pipeline."""
 
-        # Check for wake/sleep commands
-        if Config.WAKE_PHRASE.lower() in user_input.lower():
+        # Normalize apostrophes (smart quotes → straight) before any matching
+        _inp = user_input.lower().replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
+
+        # "Mel" / "Mel?" / "Mel:" / "Mel," — name alone or as prefix → attention acknowledgement
+        _stripped = _inp.strip()
+        if _stripped in ("mel", "mel?", "mel!") or _stripped.startswith("mel:") or _stripped.startswith("mel,"):
+            return f"Yes, {Config.USER_NAME}?"
+
+        # Check for wake/sleep commands — accept "daddy is home", "daddy's home", "daddys home"
+        _wake_variants = [
+            Config.WAKE_PHRASE.lower(),
+            "wake up daddy's home",
+            "wake up daddys home",
+            "daddy's home",
+            "daddy is home",
+            "daddys home",
+        ]
+        if any(v in _inp for v in _wake_variants):
             return await self.wake_up()
 
         if any(cmd in user_input.lower() for cmd in ["go to sleep", "sleep mode", "shut down"]):
@@ -463,61 +549,59 @@ class AgentOrchestrator:
         if not self.is_awake:
             return ""  # Silent when sleeping
 
-        # Step 1: Classify intent locally (no data leaves machine)
-        logger.info(f"Classifying user input ({len(user_input)} chars)...")
-        classification = await self.classifier.classify(user_input)
-        logger.info(f"Intent: category={classification.get('category')}, intent={classification.get('intent')}")
+        # Step 1: Keyword classify only — skip slow Ollama LLM for general queries
+        kw = self.classifier._keyword_classify(user_input)
+        category = kw.get("category", "INFORMATION")
 
-        category = classification.get("category", "INFORMATION")
-        requires_cloud = classification.get("requires_cloud", False)
-        intent = classification.get("intent", "unknown")
+        # Only call Ollama classifier for clear action categories that need intent detail
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME"}
+        if category in ACTION_CATEGORIES:
+            logger.info(f"Classifying user input ({len(user_input)} chars)...")
+            classification = await self.classifier.classify(user_input)
+            category = classification.get("category", category)
+            intent = classification.get("intent", "unknown")
+            logger.info(f"Intent: category={category}, intent={intent}")
+        else:
+            classification = kw
+            intent = kw.get("intent", "unknown")
 
-        # Step 2: Route to appropriate handler
+        # Step 2a: Time/date — answer instantly from system clock
+        if any(kw_t in _inp for kw_t in ("what time is it", "what's the time", "what is the time",
+                                          "current time", "what day is it", "today's date",
+                                          "what date is it", "what is today", "current date")):
+            try:
+                import pytz
+                tz = pytz.timezone(Config.TIMEZONE)
+                now = datetime.now(tz)
+            except Exception:
+                now = datetime.now()
+            day_str = now.strftime("%A, %B %d, %Y")
+            time_str = now.strftime("%I:%M %p").lstrip("0")
+            return f"It's {time_str} on {day_str}, {Config.USER_NAME}."
+
+        # Step 2b: Route action categories to specific handlers
         if category == "CODE":
-            # ── Code Generation ─────────────────────
             response = await self._handle_code(user_input, classification)
 
         elif category == "DEVOPS":
-            # ── DevOps / Shell Commands ─────────────
             response = await self._handle_devops(user_input, classification)
 
         elif category == "KNOWLEDGE":
-            # ── Knowledge Base (Memory) ─────────────
             response = await self._handle_knowledge(user_input, classification)
 
-        elif category == "PERSONAL" or category == "SYSTEM":
-            # ALWAYS local - never send personal data to cloud
-            response = await self.ollama.chat(
-                user_input,
-                system_prompt=f"You are {Config.AGENT_NAME}, a personal AI assistant. "
-                              "Answer based on the user's personal context. Be helpful and concise."
-            )
-
         elif category == "CALENDAR":
-            # ── Calendar Actions ───────────────────
             response = await self._handle_calendar(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
-            # Hybrid: plan with Claude, execute locally
-            if requires_cloud:
-                plan = await self.claude.reason(
-                    classification.get("summary", user_input),
-                    context=f"Category: {category}, Intent: {intent}"
-                )
-                response = f"Here's my plan:\n{plan}\n\nShall I execute this?"
-            else:
-                response = await self.ollama.chat(
-                    user_input,
-                    system_prompt=f"You are {Config.AGENT_NAME}. Help with: {category.lower()}"
-                )
+            response = await self.claude.converse(user_input)
 
-        elif category == "INFORMATION" and requires_cloud:
-            # Complex research - use Claude
-            response = await self.claude.reason(user_input)
+        elif category == "HOME":
+            response = await self.claude.converse(user_input)
 
         else:
-            # Default to local
-            response = await self.ollama.chat(user_input)
+            # Default: Claude with full Mel persona — handles all general conversation,
+            # personal questions, information queries, small talk, etc.
+            response = await self.claude.converse(user_input)
 
         # Store conversation in knowledge base
         if self.knowledge and response:

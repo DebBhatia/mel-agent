@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MEL — Agentic AI Control</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23a040e0'/><text y='.9em' font-size='60' x='50%' text-anchor='middle' fill='white'>M</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -52,7 +53,8 @@
     display: grid;
     grid-template-columns: 72px 1fr;
     grid-template-rows: 56px 1fr;
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
   }
 
   /* ── Top Bar ─────────────── */
@@ -219,6 +221,8 @@
     overflow-y: auto;
     overflow-x: hidden;
     position: relative;
+    height: 100%;
+    min-height: 0;
   }
 
   /* ── Glass Cards ──────────── */
@@ -383,7 +387,7 @@
   .terminal-header .dot.purple { background: var(--purple); box-shadow: 0 0 6px var(--purple); }
   .terminal-body {
     flex: 1;
-    max-height: 320px;
+    min-height: 0;
     overflow-y: auto;
     padding: 14px 16px;
     font-family: 'JetBrains Mono', monospace;
@@ -431,6 +435,46 @@
     filter: brightness(1.2);
     box-shadow: 0 0 20px rgba(224,64,160,0.3);
   }
+  .btn-wake {
+    background: linear-gradient(135deg, var(--green), #20a050);
+    border: none; padding: 8px 18px; color: white; border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+    letter-spacing: 1px; cursor: pointer; transition: all 0.2s; margin-top: 8px;
+  }
+  .btn-wake:hover { filter: brightness(1.2); box-shadow: 0 0 16px rgba(64,224,128,0.4); }
+  .btn-wake.sleeping { background: linear-gradient(135deg, var(--text-dim), #444466); }
+  .btn-mic {
+    background: transparent; border: 1px solid var(--border);
+    padding: 14px 16px; color: var(--text-dim); cursor: pointer; transition: all 0.2s;
+  }
+  .btn-mic:hover { border-color: var(--cyan); color: var(--cyan); }
+  .btn-mic.recording { border-color: var(--red); color: var(--red); animation: pulse-mic 1s infinite; }
+  @keyframes pulse-mic { 0%,100% { box-shadow: 0 0 0 rgba(224,64,96,0); } 50% { box-shadow: 0 0 12px rgba(224,64,96,0.5); } }
+  .btn-speaker {
+    background: transparent; border: 1px solid var(--border);
+    padding: 14px 16px; color: var(--text-dim); cursor: pointer; transition: all 0.2s; font-size: 1rem;
+  }
+  .btn-speaker:hover { border-color: var(--purple); color: var(--purple); }
+  .btn-speaker.active { border-color: var(--purple); color: var(--purple); box-shadow: 0 0 10px rgba(160,64,224,0.3); }
+  .btn-speaker.speaking { border-color: var(--magenta); color: var(--magenta); animation: pulse-speak 0.8s infinite; }
+  @keyframes pulse-speak { 0%,100% { box-shadow: 0 0 4px rgba(224,64,160,0.3); } 50% { box-shadow: 0 0 18px rgba(224,64,160,0.7); } }
+  .voice-bar {
+    display: flex; align-items: center; gap: 6px; padding: 6px 16px;
+    background: rgba(160,64,224,0.08); border-top: 1px solid rgba(160,64,224,0.15);
+    font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: var(--purple);
+    letter-spacing: 1px;
+  }
+  .voice-wave { display: flex; align-items: center; gap: 2px; }
+  .voice-wave span {
+    display: inline-block; width: 3px; background: var(--magenta); border-radius: 2px;
+    animation: wave 0.6s ease-in-out infinite;
+  }
+  .voice-wave span:nth-child(1) { height: 6px; animation-delay: 0s; }
+  .voice-wave span:nth-child(2) { height: 12px; animation-delay: 0.1s; }
+  .voice-wave span:nth-child(3) { height: 18px; animation-delay: 0.2s; }
+  .voice-wave span:nth-child(4) { height: 12px; animation-delay: 0.3s; }
+  .voice-wave span:nth-child(5) { height: 6px; animation-delay: 0.4s; }
+  @keyframes wave { 0%,100% { transform: scaleY(0.4); } 50% { transform: scaleY(1); } }
 
   /* ── Page Titles ──────────── */
   .page-title {
@@ -639,6 +683,8 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
   }
   .activity-item {
     display: flex;
@@ -774,7 +820,7 @@
         </div>
         <div class="glass-card fade-up fade-up-d1" style="display:flex;flex-direction:column;">
           <div style="font-family:'JetBrains Mono',monospace;font-size:0.6rem;letter-spacing:2px;text-transform:uppercase;color:var(--text-dim);margin-bottom:12px;">Live Activity</div>
-          <div class="activity-feed" id="activityFeed" style="flex:1;overflow-y:auto;">
+          <div class="activity-feed" id="activityFeed">
             <div class="activity-item">
               <div class="activity-dot amber"></div>
               <span>System initialized</span>
@@ -791,7 +837,8 @@
           <div class="accent-glow"></div>
           <div class="stat-label">Agent Status</div>
           <div class="stat-value" id="agentStatus">Sleeping</div>
-          <div class="stat-sub" id="agentUptime">Say "wake up daddy is home"</div>
+          <div class="stat-sub" id="agentUptime">Click to wake</div>
+          <button class="btn-wake sleeping" id="wakeBtn" onclick="toggleWake()">WAKE MEL</button>
         </div>
         <div class="stat-card cyan fade-up fade-up-d2">
           <div class="accent-line"></div>
@@ -817,16 +864,28 @@
       </div>
 
       <!-- Quick Terminal -->
-      <div class="terminal-panel fade-up" style="margin-bottom: 24px;">
-        <div class="terminal-header">
-          <div class="dot green"></div>
-          AGENT TERMINAL
+      <div class="terminal-panel fade-up" style="height: clamp(360px, 48vh, 560px); margin-bottom: 24px;">
+        <div class="terminal-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="dot green"></div>
+            AGENT TERMINAL
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:0.65rem;color:var(--text-dim);">
+            <span id="voiceLabel">VOICE OFF</span>
+            <button class="btn-speaker" id="speakerBtn" onclick="toggleSpeaker()" title="Toggle Mel's voice">🔇</button>
+          </div>
+        </div>
+        <div id="voiceStatusBar" style="display:none;" class="voice-bar">
+          <div class="voice-wave"><span></span><span></span><span></span><span></span><span></span></div>
+          <span id="voiceStatusText">Mel is speaking...</span>
+          <button onclick="stopSpeaking()" style="margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:0.7rem;letter-spacing:1px;">■ STOP</button>
         </div>
         <div class="terminal-body" id="commandLog">
-          <div class="log-entry"><span class="system">System ready. Type a command or say "wake up daddy is home".</span></div>
+          <div class="log-entry"><span class="system">System ready. Wake Mel then type or speak a command.</span></div>
         </div>
         <div class="terminal-input">
           <input type="text" id="commandInput" placeholder="Talk to your agent..." onkeydown="if(event.key==='Enter')sendCommand()">
+          <button class="btn-mic" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
           <button onclick="sendCommand()">SEND</button>
         </div>
       </div>
@@ -1088,12 +1147,13 @@ const API = window.location.origin;
 // ═══════════════════════════════════════════
 // 3D AI CORE VISUALIZATION
 // ═══════════════════════════════════════════
+let isAwake = false;
+
 (function initAICore() {
   const canvas = document.getElementById('aiCoreCanvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   let time = 0;
-  let isAwake = false;
 
   function resize() {
     const rect = canvas.parentElement.getBoundingClientRect();
@@ -1255,7 +1315,209 @@ function addActivity(text, color = 'cyan') {
   item.style.animation = 'fadeUp 0.3s ease-out';
   item.innerHTML = `<div class="activity-dot ${safeColor}"></div><span>${escHtml(text)}</span><span class="activity-time">${time}</span>`;
   feed.insertBefore(item, feed.firstChild);
-  if (feed.children.length > 20) feed.removeChild(feed.lastChild);
+  if (feed.children.length > 8) feed.removeChild(feed.lastChild);
+}
+
+// ═══════════════════════════════════════════
+// VOICE / TTS SYSTEM
+// ═══════════════════════════════════════════
+let voiceEnabled = false;
+let isSpeaking = false;
+let currentAudio = null;
+let elevenlabsAvailable = false;
+
+// Check if ElevenLabs is configured on server
+(async () => {
+  try {
+    const r = await fetch(`${API}/tts/config`);
+    const d = await r.json();
+    elevenlabsAvailable = d.elevenlabs;
+    if (elevenlabsAvailable) {
+      document.getElementById('voiceLabel').textContent = 'VOICE READY (ElevenLabs)';
+    } else {
+      document.getElementById('voiceLabel').textContent = 'VOICE READY (Browser)';
+    }
+  } catch(e) {}
+})();
+
+// Pick the best available female US voice for Web Speech fallback
+function getBestVoice() {
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = [
+    'Microsoft Aria Online (Natural)',
+    'Microsoft Jenny Online (Natural)',
+    'Microsoft Aria - English (United States)',
+    'Google US English',
+  ];
+  for (const name of preferred) {
+    const v = voices.find(v => v.name === name);
+    if (v) return v;
+  }
+  // Any en-US female voice
+  return voices.find(v => v.lang === 'en-US' && v.name.toLowerCase().includes('female'))
+    || voices.find(v => v.lang === 'en-US')
+    || null;
+}
+
+function toggleSpeaker() {
+  voiceEnabled = !voiceEnabled;
+  const btn = document.getElementById('speakerBtn');
+  const lbl = document.getElementById('voiceLabel');
+  if (voiceEnabled) {
+    btn.textContent = '🔊';
+    btn.classList.add('active');
+    lbl.textContent = elevenlabsAvailable ? 'VOICE ON (ElevenLabs)' : 'VOICE ON (Browser)';
+    addActivity('Voice output enabled', 'purple');
+  } else {
+    btn.textContent = '🔇';
+    btn.classList.remove('active', 'speaking');
+    lbl.textContent = 'VOICE OFF';
+    stopSpeaking();
+  }
+}
+
+function stopSpeaking() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  window.speechSynthesis && window.speechSynthesis.cancel();
+  isSpeaking = false;
+  document.getElementById('voiceStatusBar').style.display = 'none';
+  document.getElementById('speakerBtn').classList.remove('speaking');
+}
+
+function setSpeakingState(speaking, text = 'Mel is speaking...') {
+  isSpeaking = speaking;
+  const bar = document.getElementById('voiceStatusBar');
+  const btn = document.getElementById('speakerBtn');
+  if (speaking) {
+    bar.style.display = 'flex';
+    document.getElementById('voiceStatusText').textContent = text;
+    btn.classList.add('speaking');
+    if (window._setAICoreAwake) window._setAICoreAwake(true);
+  } else {
+    bar.style.display = 'none';
+    btn.classList.remove('speaking');
+  }
+}
+
+async function speakResponse(text) {
+  if (!voiceEnabled || !text) return;
+  stopSpeaking(); // cancel any ongoing speech
+  setSpeakingState(true);
+
+  if (elevenlabsAvailable) {
+    // ── ElevenLabs (realistic voice) ──────────
+    try {
+      const res = await fetch(`${API}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+        body: JSON.stringify({ text })
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        currentAudio = new Audio(url);
+        currentAudio.onended = () => { setSpeakingState(false); URL.revokeObjectURL(url); currentAudio = null; };
+        currentAudio.onerror = () => { setSpeakingState(false); speakBrowser(text); };
+        await currentAudio.play();
+        return;
+      }
+    } catch(e) {}
+  }
+
+  // ── Browser Web Speech API fallback ───────
+  speakBrowser(text);
+}
+
+function speakBrowser(text) {
+  if (!window.speechSynthesis) { setSpeakingState(false); return; }
+  window.speechSynthesis.cancel();
+
+  // Load voices (may be async on first call)
+  const doSpeak = () => {
+    const utt = new SpeechSynthesisUtterance(text);
+    const voice = getBestVoice();
+    if (voice) utt.voice = voice;
+    utt.lang = 'en-US';
+    utt.rate = 1.0;
+    utt.pitch = 1.05;
+    utt.volume = 1.0;
+    utt.onend = () => setSpeakingState(false);
+    utt.onerror = () => setSpeakingState(false);
+    window.speechSynthesis.speak(utt);
+  };
+
+  if (window.speechSynthesis.getVoices().length === 0) {
+    window.speechSynthesis.onvoiceschanged = doSpeak;
+  } else {
+    doSpeak();
+  }
+}
+
+// ═══════════════════════════════════════════
+// WAKE / SLEEP TOGGLE
+// ═══════════════════════════════════════════
+async function toggleWake() {
+  try {
+    if (isAwake) {
+      await fetch(`${API}/sleep`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+      await checkHealth();
+    } else {
+      const res = await fetch(`${API}/wake`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+      await checkHealth();
+      if (res.ok) {
+        const data = await res.json();
+        const greeting = data.message || '';
+        const log = document.getElementById('commandLog');
+        const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        log.innerHTML += `<div class="log-entry"><span class="time">${time}</span><span class="agent">Mel:</span> ${escHtml(greeting)}</div>`;
+        log.scrollTop = log.scrollHeight;
+        speakResponse(greeting);
+      }
+    }
+  } catch (e) {
+    addActivity('Wake toggle failed', 'amber');
+  }
+}
+
+// ═══════════════════════════════════════════
+// MIC / VOICE INPUT (Web Speech API)
+// ═══════════════════════════════════════════
+let recognition = null;
+let micActive = false;
+
+function toggleMic() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    addActivity('Voice not supported in this browser (use Chrome)', 'amber');
+    return;
+  }
+  if (micActive) {
+    recognition && recognition.stop();
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.lang = 'en-US';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    micActive = true;
+    document.getElementById('micBtn').classList.add('recording');
+    addActivity('Listening...', 'cyan');
+  };
+  recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    document.getElementById('commandInput').value = transcript;
+    // Auto-enable voice when user speaks so Mel talks back
+    if (!voiceEnabled) toggleSpeaker();
+    sendCommand();
+  };
+  recognition.onerror = (e) => { addActivity(`Mic error: ${e.error}`, 'amber'); };
+  recognition.onend = () => {
+    micActive = false;
+    document.getElementById('micBtn').classList.remove('recording');
+  };
+  recognition.start();
 }
 
 // ═══════════════════════════════════════════
@@ -1267,18 +1529,21 @@ async function checkHealth() {
     const data = await res.json();
 
     const pill = document.getElementById('statusPill');
+    const wakeBtn = document.getElementById('wakeBtn');
     if (data.is_awake) {
       pill.textContent = 'ONLINE';
       pill.className = 'agent-badge online';
       document.getElementById('agentStatus').textContent = 'Awake';
       document.getElementById('agentUptime').textContent = 'All systems operational';
       document.getElementById('coreStatusText').textContent = 'Core Active';
+      if (wakeBtn) { wakeBtn.textContent = 'PUT TO SLEEP'; wakeBtn.classList.remove('sleeping'); }
       if (window._setAICoreAwake) window._setAICoreAwake(true);
     } else {
       pill.textContent = 'SLEEPING';
       pill.className = 'agent-badge sleeping';
       document.getElementById('agentStatus').textContent = 'Sleeping';
       document.getElementById('coreStatusText').textContent = 'Agentic AI Core';
+      if (wakeBtn) { wakeBtn.textContent = 'WAKE MEL'; wakeBtn.classList.add('sleeping'); }
       if (window._setAICoreAwake) window._setAICoreAwake(false);
     }
 
@@ -1309,6 +1574,13 @@ checkHealth();
 // ═══════════════════════════════════════════
 // SEND COMMAND (Overview Terminal)
 // ═══════════════════════════════════════════
+// Wake phrase variants (mirrors orchestrator.py)
+const WAKE_VARIANTS = ["wake up daddy is home", "wake up daddy's home", "wake up daddys home", "daddy's home", "daddy is home", "daddys home"];
+function isWakePhrase(t) {
+  const norm = t.toLowerCase().replace(/[\u2018\u2019\u02bc]/g, "'");
+  return WAKE_VARIANTS.some(v => norm.includes(v));
+}
+
 async function sendCommand() {
   const input = document.getElementById('commandInput');
   const text = input.value.trim();
@@ -1321,17 +1593,57 @@ async function sendCommand() {
   addActivity(`Command: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}"`, 'cyan');
 
   try {
+    // Wake phrase → call /wake, speak greeting, done
+    if (isWakePhrase(text)) {
+      const wakeRes = await fetch(`${API}/wake`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+      await checkHealth();
+      if (wakeRes.ok) {
+        const wakeData = await wakeRes.json();
+        const greeting = wakeData.message || '';
+        if (greeting) {
+          const wt = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          log.innerHTML += `<div class="log-entry"><span class="time">${wt}</span><span class="agent">Mel:</span> ${escHtml(greeting)}</div>`;
+          speakResponse(greeting);
+        }
+      }
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+
+    // Auto-wake if sleeping (for regular commands)
+    if (!isAwake) {
+      const wakeRes = await fetch(`${API}/wake`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+      await checkHealth();
+      if (wakeRes.ok) {
+        const wakeData = await wakeRes.json();
+        const greeting = wakeData.message || '';
+        if (greeting) {
+          const wt = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          log.innerHTML += `<div class="log-entry"><span class="time">${wt}</span><span class="agent">Mel:</span> ${escHtml(greeting)}</div>`;
+          speakResponse(greeting);
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+    }
+
     const res = await fetch(`${API}/process`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
       body: JSON.stringify({ input: text })
     });
-    const data = await res.json();
-    const t2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    log.innerHTML += `<div class="log-entry"><span class="time">${t2}</span><span class="agent">Mel:</span> ${escHtml(data.response)}</div>`;
-    addActivity('Agent responded', 'magenta');
+    if (!res.ok) {
+      log.innerHTML += `<div class="log-entry"><span class="error">Server error ${res.status}: ${res.statusText}</span></div>`;
+      addActivity('Server error', 'amber');
+    } else {
+      const data = await res.json();
+      const reply = data.response || '(no response — Mel may still be sleeping, try waking her first)';
+      const t2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      log.innerHTML += `<div class="log-entry"><span class="time">${t2}</span><span class="agent">Mel:</span> ${escHtml(reply)}</div>`;
+      addActivity('Agent responded', 'magenta');
+      speakResponse(reply);
+    }
   } catch (e) {
-    log.innerHTML += `<div class="log-entry"><span class="error">Error: Could not reach agent</span></div>`;
+    log.innerHTML += `<div class="log-entry"><span class="error">Network error: ${escHtml(e.message)} — is the server running?</span></div>`;
     addActivity('Connection error', 'amber');
   }
   log.scrollTop = log.scrollHeight;
@@ -1350,15 +1662,25 @@ async function sendChat() {
   log.innerHTML += `<div class="log-entry"><span class="user">You:</span> ${escHtml(text)}</div>`;
 
   try {
+    if (!isAwake) {
+      await fetch(`${API}/wake`, { method: 'POST', headers: { 'X-API-Key': API_KEY } });
+      await checkHealth();
+    }
     const res = await fetch(`${API}/process`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
       body: JSON.stringify({ input: text })
     });
-    const data = await res.json();
-    log.innerHTML += `<div class="log-entry"><span class="agent">Mel:</span> ${escHtml(data.response)}</div>`;
+    if (!res.ok) {
+      log.innerHTML += `<div class="log-entry"><span class="error">Server error ${res.status}</span></div>`;
+    } else {
+      const data = await res.json();
+      const reply = data.response || '(no response — Mel may still be sleeping)';
+      log.innerHTML += `<div class="log-entry"><span class="agent">Mel:</span> ${escHtml(reply)}</div>`;
+      speakResponse(reply);
+    }
   } catch (e) {
-    log.innerHTML += `<div class="log-entry"><span class="error">Error: Could not reach agent</span></div>`;
+    log.innerHTML += `<div class="log-entry"><span class="error">Network error: ${escHtml(e.message)}</span></div>`;
   }
   log.scrollTop = log.scrollHeight;
 }
@@ -1379,7 +1701,7 @@ async function buildProject() {
   try {
     const res = await fetch(`${API}/build`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
       body: JSON.stringify({ prompt, deploy_target: target })
     });
     const data = await res.json();
@@ -1410,7 +1732,7 @@ async function buildProject() {
 // ═══════════════════════════════════════════
 async function loadProjects() {
   try {
-    const res = await fetch(`${API}/projects`);
+    const res = await fetch(`${API}/projects`, { headers: { 'X-API-Key': API_KEY } });
     const data = await res.json();
     const list = document.getElementById('projectList');
 
@@ -1452,7 +1774,7 @@ async function searchKB() {
   try {
     const res = await fetch(`${API}/knowledge/search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
       body: JSON.stringify({ query, n_results: 5 })
     });
     const data = await res.json();
@@ -1491,7 +1813,7 @@ async function runShell() {
   try {
     const res = await fetch(`${API}/shell`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
       body: JSON.stringify({ command: cmd })
     });
     const data = await res.json();
