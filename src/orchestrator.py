@@ -175,7 +175,9 @@ User request: """
 
         if any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget"]):
             return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["recall", "what did i", "do you remember", "what is my", "what's my"]):
+        elif any(kw in text for kw in ["my name", "my address", "my phone", "about me", "personal"]):
+            return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["recall", "what did i", "do you remember"]):
             return {"category": "KNOWLEDGE", "intent": "recall", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "app", "script", "dashboard", "landing page"]):
             return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
@@ -191,8 +193,6 @@ User request: """
             return {"category": "SYSTEM", "intent": "status", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["deploy", "git", "server", "docker", "process", "restart"]):
             return {"category": "DEVOPS", "intent": "manage", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["my name", "my address", "my phone", "about me", "personal"]):
-            return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
         else:
             return {"category": "INFORMATION", "intent": "unknown", "requires_cloud": True, "summary": summary}
 

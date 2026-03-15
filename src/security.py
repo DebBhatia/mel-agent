@@ -320,11 +320,14 @@ class EnhancedPIISanitizer:
         (r'\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b', '[PHONE_REDACTED]'),  # US phone
         (r'\b\d{5}(?:-\d{4})?\b', '[ZIP_REDACTED]'),             # ZIP code
         (r'(?i)\b(?:password|passwd|pwd)\s*[:=]\s*\S+', '[PASSWORD_REDACTED]'),
-        (r'(?i)\b(?:api[_-]?key|token|secret)\s*[:=]\s*\S+', '[SECRET_REDACTED]'),
+        # Specific API key patterns MUST come before generic secret matcher
         (r'sk-ant-[a-zA-Z0-9\-_]+', '[ANTHROPIC_KEY_REDACTED]'),
         (r'sk-[a-zA-Z0-9]{20,}', '[OPENAI_KEY_REDACTED]'),
         (r'AKIA[0-9A-Z]{16}', '[AWS_KEY_REDACTED]'),
         (r'ghp_[a-zA-Z0-9]{36}', '[GITHUB_TOKEN_REDACTED]'),
+        # Generic catch-all for key/token/secret assignments (after specific patterns)
+        # Negative lookahead avoids re-redacting already-replaced placeholders
+        (r'(?i)\b(?:api[_-]?key|token|secret)\s*[:=]\s*(?!\[)\S+', '[SECRET_REDACTED]'),
     ]
 
     def __init__(self, mappings_path: str = None):

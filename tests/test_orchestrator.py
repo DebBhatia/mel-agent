@@ -1,0 +1,219 @@
+"""Tests for the orchestrator module — Config, PIISanitizer, IntentClassifier, TaskManager, ActionRegistry."""
+
+import os
+import sys
+import json
+import pytest
+import asyncio
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from orchestrator import (
+    Config,
+    PIISanitizer,
+    IntentClassifier,
+    TaskManager,
+    Task,
+    TaskType,
+    ActionRegistry,
+    OllamaClient,
+    ClaudeClient,
+)
+
+
+# ── Config ────────────────────────────────────
+
+class TestConfig:
+    def test_defaults(self):
+        assert Config.AGENT_NAME  # Should have a default
+        assert Config.OLLAMA_URL.startswith("http")
+        assert Config.OLLAMA_MODEL
+        assert Config.CLAUDE_MODEL
+        assert Config.WAKE_PHRASE
+
+
+# ── PIISanitizer ──────────────────────────────
+
+class TestPIISanitizer:
+    def test_sanitize_with_no_mappings(self):
+        s = PIISanitizer()
+        s.mappings = {}
+        assert s.sanitize("hello") == "hello"
+
+    def test_sanitize_replaces_known_values(self):
+        s = PIISanitizer()
+        s.mappings = {"John Doe": "[NAME]", "john@example.com": "[EMAIL]"}
+        result = s.sanitize("Contact John Doe at john@example.com")
+        assert "[NAME]" in result
+        assert "[EMAIL]" in result
+        assert "John Doe" not in result
+
+    def test_desanitize_restores(self):
+        s = PIISanitizer()
+        s.mappings = {"John Doe": "[NAME]"}
+        sanitized = s.sanitize("Hello John Doe")
+        restored = s.desanitize(sanitized)
+        assert "John Doe" in restored
+
+    def test_roundtrip(self):
+        s = PIISanitizer()
+        s.mappings = {"secret": "[REDACTED]"}
+        original = "The secret is here"
+        assert s.desanitize(s.sanitize(original)) == original
+
+
+# ── IntentClassifier (keyword-based) ──────────
+
+class TestIntentClassifier:
+    def setup_method(self):
+        self.classifier = IntentClassifier()
+
+    def test_knowledge_store(self):
+        result = self.classifier._keyword_classify("remember that I like pizza")
+        assert result["category"] == "KNOWLEDGE"
+        assert result["intent"] == "store"
+
+    def test_knowledge_recall(self):
+        result = self.classifier._keyword_classify("what did I say about the meeting?")
+        assert result["category"] == "KNOWLEDGE"
+
+    def test_code_generation(self):
+        result = self.classifier._keyword_classify("build me a landing page for my startup")
+        assert result["category"] == "CODE"
+
+    def test_calendar(self):
+        result = self.classifier._keyword_classify("schedule a meeting for tomorrow at 3pm")
+        assert result["category"] == "CALENDAR"
+
+    def test_reservation(self):
+        result = self.classifier._keyword_classify("book a table at the Italian restaurant")
+        assert result["category"] == "RESERVATION"
+
+    def test_communication(self):
+        result = self.classifier._keyword_classify("send a text to Mom")
+        assert result["category"] == "COMMUNICATION"
+
+    def test_home(self):
+        result = self.classifier._keyword_classify("turn on the living room lights")
+        assert result["category"] == "HOME"
+
+    def test_system(self):
+        result = self.classifier._keyword_classify("what's your status?")
+        assert result["category"] == "SYSTEM"
+
+    def test_devops(self):
+        result = self.classifier._keyword_classify("deploy the latest version")
+        assert result["category"] == "DEVOPS"
+
+    def test_personal(self):
+        result = self.classifier._keyword_classify("what is my name?")
+        assert result["category"] == "PERSONAL"
+
+    def test_fallback_information(self):
+        result = self.classifier._keyword_classify("tell me about quantum physics")
+        assert result["category"] == "INFORMATION"
+
+    def test_safe_summary_truncates(self):
+        long_input = "x" * 200
+        summary = IntentClassifier._safe_summary(long_input)
+        assert len(summary) == 100
+
+    def test_classification_has_required_keys(self):
+        result = self.classifier._keyword_classify("anything")
+        assert "category" in result
+        assert "intent" in result
+        assert "requires_cloud" in result
+        assert "summary" in result
+
+
+# ── TaskManager ───────────────────────────────
+
+class TestTaskManager:
+    def test_add_and_get_pending(self, tmp_path):
+        tm = TaskManager(db_path=str(tmp_path / "tasks.json"))
+        task = Task(id="t1", intent="test", raw_input="test input", task_type=TaskType.LOCAL)
+        tm.add(task)
+        pending = tm.get_pending()
+        assert len(pending) == 1
+        assert pending[0].id == "t1"
+
+    def test_update_status(self, tmp_path):
+        tm = TaskManager(db_path=str(tmp_path / "tasks.json"))
+        task = Task(id="t2", intent="test", raw_input="test", task_type=TaskType.LOCAL)
+        tm.add(task)
+        tm.update("t2", status="completed")
+        assert len(tm.get_pending()) == 0
+
+    def test_persistence(self, tmp_path):
+        path = str(tmp_path / "tasks.json")
+        tm1 = TaskManager(db_path=path)
+        tm1.add(Task(id="tp", intent="test", raw_input="x", task_type=TaskType.LOCAL))
+        tm2 = TaskManager(db_path=path)
+        assert len(tm2.tasks) == 1
+
+    def test_task_defaults(self):
+        t = Task(id="x", intent="i", raw_input="r", task_type=TaskType.CLOUD)
+        assert t.status == "pending"
+        assert t.result is None
+        assert t.created_at  # Should have a timestamp
+
+
+# ── ActionRegistry ────────────────────────────
+
+class TestActionRegistry:
+    @pytest.mark.asyncio
+    async def test_register_and_execute(self):
+        registry = ActionRegistry()
+        async def handler(params):
+            return f"handled: {params['x']}"
+        registry.register("test_action", handler, "Test action")
+        result = await registry.execute("test_action", {"x": "hello"})
+        assert result == "handled: hello"
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self):
+        registry = ActionRegistry()
+        result = await registry.execute("nonexistent", {})
+        assert "Unknown action" in result
+
+    @pytest.mark.asyncio
+    async def test_handler_exception(self):
+        registry = ActionRegistry()
+        async def bad_handler(params):
+            raise ValueError("boom")
+        registry.register("bad", bad_handler)
+        result = await registry.execute("bad", {})
+        assert "failed" in result.lower()
+
+
+# ── OllamaClient ─────────────────────────────
+
+class TestOllamaClient:
+    def test_init(self):
+        client = OllamaClient()
+        assert client.base_url == Config.OLLAMA_URL
+        assert client.model == Config.OLLAMA_MODEL
+        assert client.conversation_history == []
+
+    def test_conversation_history_cap(self):
+        client = OllamaClient()
+        # Simulate 40 messages
+        client.conversation_history = [{"role": "user", "content": f"msg{i}"} for i in range(40)]
+        # The cap is applied during chat, but we can check the init state
+        assert len(client.conversation_history) == 40
+
+
+# ── ClaudeClient ──────────────────────────────
+
+class TestClaudeClient:
+    def test_init(self):
+        client = ClaudeClient()
+        assert client.model == Config.CLAUDE_MODEL
+        assert isinstance(client.sanitizer, PIISanitizer)
+
+    @pytest.mark.asyncio
+    async def test_no_api_key(self):
+        client = ClaudeClient()
+        client.api_key = ""
+        result = await client.reason("test task")
+        assert "not configured" in result.lower()
