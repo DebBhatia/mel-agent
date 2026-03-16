@@ -110,6 +110,7 @@ Classify the user's request into exactly ONE of these categories:
 - CODE: Build/create/generate apps, websites, scripts, interfaces, dashboards, components, landing pages, any coding task
 - DEVOPS: Server management, deployments, git operations, system monitoring, docker, process management
 - KNOWLEDGE: Remember something, recall past conversations, "what did I say about...", "do you remember..."
+- DESIGN: UI/UX design, style guides, color palettes, typography, design system, font pairing, chart type, landing page design
 
 Respond with ONLY a JSON object with these keys: category, intent, requires_cloud (boolean), summary.
 Example: {"category": "CALENDAR", "intent": "book_event", "requires_cloud": false, "summary": "User wants to schedule a meeting"}
@@ -155,7 +156,7 @@ User request: """
                             pass
 
                 valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION",
-                                    "HOME", "MUSIC", "REMINDER", "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
+                                    "HOME", "MUSIC", "REMINDER", "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE", "DESIGN"]
                 if parsed and isinstance(parsed, dict) and parsed.get("category", "").upper() in valid_categories:
                     parsed["category"] = parsed["category"].upper()
                     return parsed
@@ -194,6 +195,10 @@ User request: """
         elif any(kw in text for kw in ["my reminders", "pending reminders", "list reminders",
                                         "cancel reminder", "delete reminder"]):
             return {"category": "REMINDER", "intent": "manage", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["design system", "color palette", "font pairing", "ui style",
+                                        "ux guideline", "chart type", "typography", "design for",
+                                        "style guide", "icon set", "landing pattern"]):
+            return {"category": "DESIGN", "intent": "search", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "app", "script", "dashboard", "landing page"]):
             return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "appointment"]):
@@ -512,6 +517,15 @@ class AgentOrchestrator:
         except ImportError:
             logger.warning("Scheduler not available")
 
+        # UI/UX design intelligence
+        try:
+            from ui_ux import register_ui_ux_plugins
+            self.ui_ux = register_ui_ux_plugins(self.actions)
+            logger.info("✅ UI/UX Pro Max plugin loaded")
+        except ImportError:
+            self.ui_ux = None
+            logger.warning("UI/UX plugin not available")
+
     def _init_extensions(self):
         """Initialize optional extensions (codegen, knowledge base)."""
         try:
@@ -596,7 +610,7 @@ class AgentOrchestrator:
         category = kw.get("category", "INFORMATION")
 
         # Only call Ollama classifier for clear action categories that need intent detail
-        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER"}
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "DESIGN"}
         if category in ACTION_CATEGORIES:
             logger.info(f"Classifying user input ({len(user_input)} chars)...")
             classification = await self.classifier.classify(user_input)
@@ -642,6 +656,9 @@ class AgentOrchestrator:
 
         elif category == "HOME":
             response = await self._handle_home(user_input, classification)
+
+        elif category == "DESIGN":
+            response = await self._handle_design(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
             response = await self.claude.converse(user_input)
@@ -777,6 +794,38 @@ class AgentOrchestrator:
 
         else:
             return f"❌ Build failed: {result.get('error', 'Unknown error')}"
+
+    # ─────────────────────────────────────────────
+    # DESIGN Handler - UI/UX design intelligence
+    # ─────────────────────────────────────────────
+    async def _handle_design(self, user_input: str, classification: dict) -> str:
+        """Handle UI/UX design queries using the design intelligence plugin."""
+        if not self.ui_ux:
+            return "UI/UX design plugin not loaded. Ensure ui_ux.py is in the src/ directory."
+
+        intent = classification.get("intent", "")
+        text_lower = user_input.lower()
+
+        # Check if requesting a full design system
+        if any(kw in text_lower for kw in ["design system", "full design", "complete design", "style guide for"]):
+            return await self.actions.execute("ui_ux_design_system", {
+                "query": user_input,
+                "project_name": None,
+            })
+
+        # Check for stack-specific queries
+        from ui_ux import AVAILABLE_STACKS
+        for stack in AVAILABLE_STACKS:
+            if stack.replace("-", " ") in text_lower or stack in text_lower:
+                return await self.actions.execute("ui_ux_stack", {
+                    "query": user_input,
+                    "stack": stack,
+                })
+
+        # Default: domain search (auto-detect domain)
+        return await self.actions.execute("ui_ux_search", {
+            "query": user_input,
+        })
 
     # ─────────────────────────────────────────────
     # DEVOPS Handler - Shell commands, monitoring

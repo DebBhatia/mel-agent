@@ -214,6 +214,22 @@ class SmartHomeCommandRequest(BaseModel):
     value: Optional[str] = ""
 
 
+class UIUXSearchRequest(BaseModel):
+    query: str
+    domain: Optional[str] = None
+    max_results: int = 3
+
+    @field_validator("max_results")
+    @classmethod
+    def cap_max_results(cls, v):
+        return min(v, 10)
+
+
+class UIUXDesignSystemRequest(BaseModel):
+    query: str
+    project_name: Optional[str] = None
+
+
 # ── Core ─────────────────────────────────────
 
 @app.get("/health/detail", dependencies=[Depends(require_api_key)])
@@ -599,6 +615,35 @@ async def smarthome_command(request: SmartHomeCommandRequest):
     return {"status": "ok", "result": result}
 
 
+# ── UI/UX Design Intelligence ─────────────────
+@app.post("/design/search", dependencies=[Depends(require_api_key)])
+async def design_search(request: UIUXSearchRequest):
+    """Search UI/UX design knowledge base (styles, colors, charts, typography, etc.)."""
+    result = await agent.actions.execute("ui_ux_search", {
+        "query": request.query,
+        "domain": request.domain,
+        "max_results": request.max_results,
+    })
+    return {"status": "ok", "result": result}
+
+
+@app.post("/design/system", dependencies=[Depends(require_api_key)])
+async def design_system(request: UIUXDesignSystemRequest):
+    """Generate a complete design system recommendation."""
+    result = await agent.actions.execute("ui_ux_design_system", {
+        "query": request.query,
+        "project_name": request.project_name,
+    })
+    return {"status": "ok", "result": result}
+
+
+@app.get("/design/domains", dependencies=[Depends(require_api_key)])
+async def design_domains():
+    """List available UI/UX search domains and stacks."""
+    result = await agent.actions.execute("ui_ux_domains", {})
+    return {"status": "ok", "result": result}
+
+
 # ── Enhanced health check with new services ──
 @app.get("/health")
 async def health_check_v2():
@@ -638,6 +683,7 @@ async def health_check_v2():
             "knowledge_base": {"entries": kb_entries},
             "spotify": spotify_status,
             "smarthome": smarthome_status,
+            "ui_ux": "ready" if agent.ui_ux else "not loaded",
         },
         "stats": {
             "projects_built": projects_count,
