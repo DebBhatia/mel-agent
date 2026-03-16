@@ -1087,6 +1087,10 @@
       <span>🏠</span>
       <div class="tooltip">Smart Home</div>
     </div>
+    <div class="nav-icon" onclick="showPage('routines', this)">
+      <span>🔄</span>
+      <div class="tooltip">Routines</div>
+    </div>
     <div class="nav-divider"></div>
     <div class="nav-icon" onclick="showPage('devops', this)">
       <span>🔧</span>
@@ -1197,8 +1201,32 @@
           </div>
         </div>
 
+        <!-- Weather Widget -->
+        <div class="widget-card fade-up fade-up-d3" style="border-top:2px solid var(--cyan);">
+          <div class="widget-header"><span class="w-icon">🌤️</span> Weather</div>
+          <div id="weatherWidget">
+            <div style="color:var(--text-dim);font-size:0.78rem;padding:8px;" id="weatherLoading">Loading weather...</div>
+            <div id="weatherContent" style="display:none;">
+              <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
+                <div style="font-size:2.2rem;font-weight:700;color:var(--cyan);" id="weatherTemp">--</div>
+                <div>
+                  <div style="font-size:0.85rem;font-weight:600;" id="weatherDesc">--</div>
+                  <div style="font-size:0.7rem;color:var(--text-dim);" id="weatherCity">--</div>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.7rem;font-family:'JetBrains Mono',monospace;">
+                <div style="color:var(--text-dim);">Feels like <span style="color:var(--text);" id="weatherFeels">--</span></div>
+                <div style="color:var(--text-dim);">Humidity <span style="color:var(--text);" id="weatherHumidity">--</span></div>
+                <div style="color:var(--text-dim);">Wind <span style="color:var(--text);" id="weatherWind">--</span></div>
+                <div style="color:var(--text-dim);">Sunset <span style="color:var(--text);" id="weatherSunset">--</span></div>
+              </div>
+              <div id="weatherForecast" style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Reminders Widget -->
-        <div class="widget-card reminder-widget fade-up fade-up-d3">
+        <div class="widget-card reminder-widget fade-up fade-up-d4">
           <div class="widget-header"><span class="w-icon">⏰</span> Reminders</div>
           <div class="reminder-list" id="reminderList">
             <div style="color:var(--text-dim);font-size:0.78rem;padding:8px;">No reminders set.</div>
@@ -1390,6 +1418,56 @@
         <div style="display:flex;gap:10px;flex-wrap:wrap;" id="homeScenes">
           <button onclick="activateScene('movie_night')" class="example-pill" style="border-color:var(--purple);color:var(--purple);">🎬 Movie Night</button>
           <button onclick="activateScene('good_morning')" class="example-pill" style="border-color:var(--amber);color:var(--amber);">🌅 Good Morning</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════ Routines Page ══════ -->
+    <div id="page-routines" style="display:none;">
+      <div class="page-title">
+        <div class="glow-dot" style="background:var(--amber);box-shadow:0 0 8px var(--amber);"></div>
+        Routines & Automations
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+        <div class="glass-card" style="border-top:2px solid var(--magenta);cursor:pointer;" onclick="runRoutine('morning_briefing')">
+          <div style="font-size:1.4rem;margin-bottom:6px;">🌅</div>
+          <div style="font-weight:600;font-size:0.95rem;">Morning Briefing</div>
+          <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">Weather, calendar, and a greeting to start your day.</div>
+          <button style="margin-top:12px;background:linear-gradient(135deg,var(--magenta),var(--purple));border:none;padding:8px 16px;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:0.7rem;font-weight:700;cursor:pointer;letter-spacing:1px;">RUN</button>
+        </div>
+        <div class="glass-card" style="border-top:2px solid var(--purple);cursor:pointer;" onclick="runRoutine('goodnight')">
+          <div style="font-size:1.4rem;margin-bottom:6px;">🌙</div>
+          <div style="font-weight:600;font-size:0.95rem;">Goodnight</div>
+          <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">Lock up, lights off, and tomorrow's preview.</div>
+          <button style="margin-top:12px;background:linear-gradient(135deg,var(--purple),#6020a0);border:none;padding:8px 16px;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:0.7rem;font-weight:700;cursor:pointer;letter-spacing:1px;">RUN</button>
+        </div>
+        <div class="glass-card" style="border-top:2px solid var(--cyan);cursor:pointer;" onclick="runRoutine('leaving_home')">
+          <div style="font-size:1.4rem;margin-bottom:6px;">🚪</div>
+          <div style="font-weight:600;font-size:0.95rem;">Leaving Home</div>
+          <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">Turn off lights, lock doors, and check weather.</div>
+          <button style="margin-top:12px;background:linear-gradient(135deg,var(--cyan),#2080a0);border:none;padding:8px 16px;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:0.7rem;font-weight:700;cursor:pointer;letter-spacing:1px;">RUN</button>
+        </div>
+        <div class="glass-card" style="border-top:2px solid var(--green);cursor:pointer;" onclick="runRoutine('welcome_home')">
+          <div style="font-size:1.4rem;margin-bottom:6px;">🏠</div>
+          <div style="font-weight:600;font-size:0.95rem;">Welcome Home</div>
+          <div style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;">Lights on, comfort temp, and catch up on events.</div>
+          <button style="margin-top:12px;background:linear-gradient(135deg,var(--green),#20a060);border:none;padding:8px 16px;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:0.7rem;font-weight:700;cursor:pointer;letter-spacing:1px;">RUN</button>
+        </div>
+      </div>
+      <div class="glass-card" style="margin-top:16px;">
+        <div style="font-size:0.95rem;font-weight:600;margin-bottom:10px;">Routine Results</div>
+        <div id="routineResults" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--text-dim);max-height:300px;overflow-y:auto;">
+          Run a routine to see results here.
+        </div>
+      </div>
+      <div class="glass-card" style="margin-top:16px;">
+        <div style="font-size:0.95rem;font-weight:600;margin-bottom:10px;">Notification Status</div>
+        <div id="notificationStatus" style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--text-dim);">
+          Checking notification backends...
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <input type="text" id="testNotifyMsg" placeholder="Test notification message..." style="flex:1;background:rgba(8,8,16,0.6);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:0.75rem;outline:none;">
+          <button onclick="sendTestNotification()" style="background:linear-gradient(135deg,var(--magenta),var(--purple));border:none;padding:8px 16px;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:0.7rem;font-weight:700;cursor:pointer;letter-spacing:1px;">SEND</button>
         </div>
       </div>
     </div>
@@ -2615,6 +2693,132 @@ async function activateScene(scene) {
 
 
 // ═══════════════════════════════════════════
+// WEATHER
+// ═══════════════════════════════════════════
+async function loadWeather() {
+  try {
+    const resp = await fetch(`${API}/weather/current`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (!resp.ok) {
+      document.getElementById('weatherLoading').textContent = 'Weather not configured';
+      return;
+    }
+    const data = await resp.json();
+    document.getElementById('weatherLoading').style.display = 'none';
+    document.getElementById('weatherContent').style.display = 'block';
+    document.getElementById('weatherTemp').textContent = `${data.temperature}${data.unit_symbol}`;
+    document.getElementById('weatherDesc').textContent = data.description;
+    document.getElementById('weatherCity').textContent = `${data.city}, ${data.country}`;
+    document.getElementById('weatherFeels').textContent = `${data.feels_like}${data.unit_symbol}`;
+    document.getElementById('weatherHumidity').textContent = `${data.humidity}%`;
+    document.getElementById('weatherWind').textContent = `${data.wind_speed} ${data.speed_unit}`;
+    document.getElementById('weatherSunset').textContent = data.sunset;
+  } catch (e) {
+    document.getElementById('weatherLoading').textContent = 'Weather unavailable';
+  }
+
+  // Load forecast
+  try {
+    const resp = await fetch(`${API}/weather/forecast?days=3`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const fc = document.getElementById('weatherForecast');
+      fc.innerHTML = data.forecast.map(d =>
+        `<div style="display:flex;justify-content:space-between;font-size:0.7rem;font-family:'JetBrains Mono',monospace;padding:3px 0;color:var(--text-dim);">
+          <span>${d.date}</span>
+          <span style="color:var(--text);">${d.description}</span>
+          <span style="color:var(--cyan);">${d.low}-${d.high}${d.unit_symbol}</span>
+        </div>`
+      ).join('');
+    }
+  } catch (e) {}
+}
+
+
+// ═══════════════════════════════════════════
+// ROUTINES
+// ═══════════════════════════════════════════
+async function runRoutine(routineId) {
+  const resultsEl = document.getElementById('routineResults');
+  resultsEl.innerHTML = `<div style="color:var(--amber);">Running ${routineId}...</div>`;
+  addActivity(`Running routine: ${routineId}`, 'amber');
+
+  try {
+    const resp = await fetch(`${API}/routines/${routineId}/run`, {
+      method: 'POST',
+      headers: { 'X-API-Key': API_KEY }
+    });
+    const data = await resp.json();
+
+    if (data.results) {
+      resultsEl.innerHTML = data.results.map(step => {
+        const color = step.status === 'ok' ? 'var(--green)' : 'var(--red)';
+        const icon = step.status === 'ok' ? 'OK' : 'FAIL';
+        return `<div style="padding:4px 0;border-bottom:1px solid var(--border);">
+          <span style="color:${color};font-weight:700;">[${icon}]</span> ${step.label}: <span style="color:var(--text);">${step.result}</span>
+        </div>`;
+      }).join('');
+      resultsEl.innerHTML += `<div style="margin-top:8px;color:var(--green);font-weight:600;">${data.routine} complete — ${data.steps_ok}/${data.steps_total} steps OK</div>`;
+    } else {
+      resultsEl.innerHTML = `<div style="color:var(--red);">Error: ${data.detail || 'Unknown error'}</div>`;
+    }
+
+    addActivity(`Routine completed: ${routineId}`, 'green');
+    // Refresh weather and calendar after routine
+    loadWeather();
+    loadCalendarEvents();
+  } catch (e) {
+    resultsEl.innerHTML = `<div style="color:var(--red);">Failed to run routine: ${e.message}</div>`;
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════
+async function loadNotificationStatus() {
+  try {
+    const resp = await fetch(`${API}/notifications/status`, {
+      headers: { 'X-API-Key': API_KEY }
+    });
+    const data = await resp.json();
+    const el = document.getElementById('notificationStatus');
+    if (data.configured && data.backends.length > 0) {
+      el.innerHTML = `<span style="color:var(--green);">Connected:</span> ${data.backends.join(', ')}`;
+    } else {
+      el.innerHTML = 'No notification backends configured. Add NTFY_TOPIC, Pushover, or Telegram to .env';
+    }
+  } catch (e) {
+    document.getElementById('notificationStatus').textContent = 'Could not check notification status';
+  }
+}
+
+async function sendTestNotification() {
+  const msg = document.getElementById('testNotifyMsg').value.trim();
+  if (!msg) return;
+  try {
+    const resp = await fetch(`${API}/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ title: 'Mel Agent', message: msg })
+    });
+    const data = await resp.json();
+    if (data.status === 'sent') {
+      addActivity('Notification sent', 'green');
+      document.getElementById('testNotifyMsg').value = '';
+    } else {
+      addActivity('Notification failed', 'red');
+    }
+  } catch (e) {
+    addActivity('Notification error', 'red');
+  }
+}
+
+
+// ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 loadProjects();
@@ -2622,10 +2826,13 @@ checkSpotifyStatus();
 loadCalendarEvents();
 loadReminders();
 loadSmartHomeDevices();
+loadWeather();
+loadNotificationStatus();
 // Refresh widgets periodically
 setInterval(loadCalendarEvents, 60000);
 setInterval(loadReminders, 15000);
 setInterval(loadSmartHomeDevices, 30000);
+setInterval(loadWeather, 300000);  // Refresh weather every 5 min
 </script>
 </body>
 </html>
