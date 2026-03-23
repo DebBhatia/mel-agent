@@ -105,6 +105,9 @@ Classify the user's request into exactly ONE of these categories:
 - HOME: Smart home controls, lights, locks, thermostat, temperature, device management
 - MUSIC: Play music, pause, skip, volume, what's playing, Spotify
 - REMINDER: Set reminders, alarms, "remind me", "in 30 minutes", scheduled tasks
+- WEATHER: Weather conditions, temperature, forecast, umbrella, rain, sunny
+- ROUTINE: Morning briefing, goodnight routine, leaving home, run a routine
+- NOTIFICATION: Send a notification, push alert, notify me
 - PERSONAL: Questions about personal data, preferences, history
 - SYSTEM: Agent management, settings, status checks
 - CODE: Build/create/generate apps, websites, scripts, interfaces, dashboards, components, landing pages, any coding task
@@ -155,7 +158,8 @@ User request: """
                             pass
 
                 valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION",
-                                    "HOME", "MUSIC", "REMINDER", "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
+                                    "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION",
+                                    "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
                 if parsed and isinstance(parsed, dict) and parsed.get("category", "").upper() in valid_categories:
                     parsed["category"] = parsed["category"].upper()
                     return parsed
@@ -177,7 +181,16 @@ User request: """
         text = user_input.lower()
         summary = self._safe_summary(user_input)
 
-        if any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget"]):
+        if any(kw in text for kw in ["weather", "forecast", "temperature outside", "how hot", "how cold",
+                                        "umbrella", "raining", "is it sunny", "rain today"]):
+            return {"category": "WEATHER", "intent": "check", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["morning briefing", "goodnight routine", "leaving home", "run routine",
+                                        "start routine", "welcome home routine", "bedtime", "my briefing"]):
+            return {"category": "ROUTINE", "intent": "execute", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["send notification", "notify me", "push alert", "send alert",
+                                        "push notification"]):
+            return {"category": "NOTIFICATION", "intent": "send", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget"]):
             return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["my name", "my address", "my phone", "about me", "personal"]):
             return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
@@ -512,6 +525,33 @@ class AgentOrchestrator:
         except ImportError:
             logger.warning("Scheduler not available")
 
+        # Weather
+        self.weather = None
+        try:
+            from weather import register_weather_plugins
+            self.weather = register_weather_plugins(self.actions)
+            logger.info("✅ Weather plugin loaded")
+        except ImportError:
+            logger.warning("Weather plugin not available")
+
+        # Routines
+        self.routines = None
+        try:
+            from routines import RoutineEngine
+            self.routines = RoutineEngine()
+            logger.info("✅ Routines engine loaded")
+        except ImportError:
+            logger.warning("Routines engine not available")
+
+        # Notifications
+        self.notifications = None
+        try:
+            from notifications import register_notification_plugins
+            self.notifications = register_notification_plugins(self.actions)
+            logger.info("✅ Notification service loaded")
+        except ImportError:
+            logger.warning("Notification service not available")
+
     def _init_extensions(self):
         """Initialize optional extensions (codegen, knowledge base)."""
         try:
@@ -596,7 +636,7 @@ class AgentOrchestrator:
         category = kw.get("category", "INFORMATION")
 
         # Only call Ollama classifier for clear action categories that need intent detail
-        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER"}
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
         if category in ACTION_CATEGORIES:
             logger.info(f"Classifying user input ({len(user_input)} chars)...")
             classification = await self.classifier.classify(user_input)
@@ -642,6 +682,15 @@ class AgentOrchestrator:
 
         elif category == "HOME":
             response = await self._handle_home(user_input, classification)
+
+        elif category == "WEATHER":
+            response = await self._handle_weather(user_input, classification)
+
+        elif category == "ROUTINE":
+            response = await self._handle_routine(user_input, classification)
+
+        elif category == "NOTIFICATION":
+            response = await self._handle_notification(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
             response = await self.claude.converse(user_input)
@@ -1017,6 +1066,104 @@ Request: {summary}"""
 
         # Fallback — list devices
         return await self.smarthome.get_status_summary()
+
+    # ─────────────────────────────────────────────
+    # WEATHER Handler - Current conditions & forecast
+    # ─────────────────────────────────────────────
+    async def _handle_weather(self, user_input: str, classification: dict) -> str:
+        """Handle weather queries."""
+        if not self.weather:
+            return "Weather service not available. Add OPENWEATHER_API_KEY to your .env file."
+
+        text = user_input.lower()
+        import re
+
+        # Extract city if mentioned
+        city = None
+        city_match = re.search(r'(?:weather|forecast|temperature)\s+(?:in|for|at)\s+(.+?)(?:\?|$|\.)', text)
+        if city_match:
+            city = city_match.group(1).strip()
+
+        if any(kw in text for kw in ["forecast", "next few days", "this week", "tomorrow"]):
+            result = await self.weather.get_forecast(city)
+            if "error" in result:
+                return result["error"]
+            lines = [f"Forecast for {result['city']}:"]
+            for day in result["forecast"]:
+                lines.append(f"  {day['date']}: {day['description']} — {day['low']}{day['unit_symbol']} to {day['high']}{day['unit_symbol']}")
+            return "\n".join(lines)
+
+        if any(kw in text for kw in ["umbrella", "rain", "raining"]):
+            return await self.weather.needs_umbrella(city)
+
+        return await self.weather.get_summary(city)
+
+    # ─────────────────────────────────────────────
+    # ROUTINE Handler - Multi-step automations
+    # ─────────────────────────────────────────────
+    async def _handle_routine(self, user_input: str, classification: dict) -> str:
+        """Handle routine execution and management."""
+        if not self.routines:
+            return "Routines engine not available."
+
+        text = user_input.lower()
+
+        # List routines
+        if any(kw in text for kw in ["list routine", "show routine", "what routine", "available routine"]):
+            routines = self.routines.list_routines()
+            lines = ["Available routines:"]
+            for r in routines:
+                tag = " (built-in)" if r["builtin"] else " (custom)"
+                lines.append(f"  - {r['name']}: {r['description']}{tag}")
+            return "\n".join(lines)
+
+        # Match a specific routine to run
+        routine_id = None
+        if any(kw in text for kw in ["morning", "briefing", "brief me"]):
+            routine_id = "morning_briefing"
+        elif any(kw in text for kw in ["goodnight", "bedtime", "good night"]):
+            routine_id = "goodnight"
+        elif any(kw in text for kw in ["leaving", "leave home", "heading out", "going out"]):
+            routine_id = "leaving_home"
+        elif any(kw in text for kw in ["welcome home", "i'm home", "im home", "i am home"]):
+            routine_id = "welcome_home"
+
+        if routine_id:
+            return await self.routines.execute_and_summarize(
+                routine_id, self.actions,
+                agent_name=Config.AGENT_NAME, user_name=Config.USER_NAME,
+            )
+
+        return ("I have these routines available: Morning Briefing, Goodnight, Leaving Home, Welcome Home. "
+                "Which one would you like me to run?")
+
+    # ─────────────────────────────────────────────
+    # NOTIFICATION Handler - Push alerts
+    # ─────────────────────────────────────────────
+    async def _handle_notification(self, user_input: str, classification: dict) -> str:
+        """Handle push notification requests."""
+        if not self.notifications:
+            return "Notification service not available. Configure NTFY_TOPIC, Pushover, or Telegram in .env."
+
+        if not self.notifications.is_configured():
+            return ("No notification backends configured. Add one of these to your .env:\n"
+                    "  - NTFY_TOPIC=your-topic-name (easiest, free)\n"
+                    "  - PUSHOVER_USER_KEY + PUSHOVER_API_TOKEN\n"
+                    "  - TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID")
+
+        import re
+        # Extract message content
+        msg_match = re.search(r'(?:send|notify|alert|push)\s+(?:me\s+)?(?:a\s+)?(?:notification\s+)?(?:that\s+|saying\s+)?(.+)', user_input, re.IGNORECASE)
+        message = msg_match.group(1).strip() if msg_match else user_input
+
+        result = await self.notifications.send(
+            title=f"From {Config.AGENT_NAME}",
+            message=message,
+        )
+        if result["status"] == "sent":
+            backends = ", ".join(result["backends"].keys())
+            return f"Notification sent via {backends}."
+        return "Failed to send notification. Check your configuration."
 
     @staticmethod
     def _extract_device_name(text: str) -> str:

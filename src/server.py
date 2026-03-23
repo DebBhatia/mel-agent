@@ -214,6 +214,19 @@ class SmartHomeCommandRequest(BaseModel):
     value: Optional[str] = ""
 
 
+class NotificationRequest(BaseModel):
+    title: str = "Mel Agent"
+    message: str
+    priority: str = "normal"
+    backend: Optional[str] = None
+
+
+class RoutineCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    steps: list = []
+
+
 # ── Core ─────────────────────────────────────
 
 @app.get("/health/detail", dependencies=[Depends(require_api_key)])
@@ -599,6 +612,107 @@ async def smarthome_command(request: SmartHomeCommandRequest):
     return {"status": "ok", "result": result}
 
 
+# ── Weather ──────────────────────────────────
+@app.get("/weather/current", dependencies=[Depends(require_api_key)])
+async def weather_current(city: Optional[str] = None):
+    """Get current weather."""
+    if not agent.weather:
+        raise HTTPException(status_code=503, detail="Weather service not configured")
+    result = await agent.weather.get_current(city)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
+
+@app.get("/weather/forecast", dependencies=[Depends(require_api_key)])
+async def weather_forecast(city: Optional[str] = None, days: int = 3):
+    """Get weather forecast."""
+    if not agent.weather:
+        raise HTTPException(status_code=503, detail="Weather service not configured")
+    if days > 5:
+        days = 5
+    result = await agent.weather.get_forecast(city, days)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
+
+@app.get("/weather/summary", dependencies=[Depends(require_api_key)])
+async def weather_summary(city: Optional[str] = None):
+    """Get natural language weather summary."""
+    if not agent.weather:
+        raise HTTPException(status_code=503, detail="Weather service not configured")
+    return {"summary": await agent.weather.get_summary(city)}
+
+
+# ── Routines ────────────────────────────────
+@app.get("/routines", dependencies=[Depends(require_api_key)])
+async def list_routines():
+    """List all available routines."""
+    if not agent.routines:
+        return {"routines": []}
+    return {"routines": agent.routines.list_routines()}
+
+@app.post("/routines/{routine_id}/run", dependencies=[Depends(require_api_key)])
+async def run_routine(routine_id: str):
+    """Execute a routine."""
+    if not agent.routines:
+        raise HTTPException(status_code=503, detail="Routines engine not available")
+    result = await agent.routines.execute(routine_id, agent.actions)
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
+
+@app.post("/routines/create", dependencies=[Depends(require_api_key)])
+async def create_routine(request: RoutineCreateRequest):
+    """Create a custom routine."""
+    if not agent.routines:
+        raise HTTPException(status_code=503, detail="Routines engine not available")
+    routine = agent.routines.create_custom(request.name, request.description, request.steps)
+    from dataclasses import asdict
+    return {"status": "created", "routine": asdict(routine)}
+
+@app.delete("/routines/{routine_id}", dependencies=[Depends(require_api_key)])
+async def delete_routine(routine_id: str):
+    """Delete a custom routine."""
+    if not agent.routines:
+        raise HTTPException(status_code=503, detail="Routines engine not available")
+    success = agent.routines.delete_custom(routine_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot delete built-in routines or routine not found")
+    return {"status": "deleted"}
+
+
+# ── Notifications ───────────────────────────
+@app.post("/notifications/send", dependencies=[Depends(require_api_key)])
+async def send_notification(request: NotificationRequest):
+    """Send a push notification."""
+    if not agent.notifications:
+        raise HTTPException(status_code=503, detail="Notification service not configured")
+    result = await agent.notifications.send(
+        title=request.title,
+        message=request.message,
+        priority=request.priority,
+        backend=request.backend,
+    )
+    return result
+
+@app.get("/notifications/status", dependencies=[Depends(require_api_key)])
+async def notification_status():
+    """Get notification service status."""
+    if not agent.notifications:
+        return {"configured": False, "backends": []}
+    return {
+        "configured": agent.notifications.is_configured(),
+        "backends": agent.notifications.get_configured_backends(),
+    }
+
+@app.get("/notifications/history", dependencies=[Depends(require_api_key)])
+async def notification_history():
+    """Get recent notification history."""
+    if not agent.notifications:
+        return {"notifications": []}
+    return {"notifications": agent.notifications.get_recent()}
+
+
 # ── Enhanced health check with new services ──
 @app.get("/health")
 async def health_check_v2():
@@ -625,6 +739,14 @@ async def health_check_v2():
     if agent.smarthome:
         smarthome_status = "connected" if agent.smarthome.ha.is_configured() else "simulated"
 
+    weather_status = "not configured"
+    if agent.weather and agent.weather.is_configured():
+        weather_status = "configured"
+
+    routines_count = len(agent.routines.list_routines()) if agent.routines else 0
+
+    notification_backends = agent.notifications.get_configured_backends() if agent.notifications else []
+
     pending_reminders = len(agent.scheduler.get_pending()) if agent.scheduler else 0
 
     return {
@@ -638,6 +760,9 @@ async def health_check_v2():
             "knowledge_base": {"entries": kb_entries},
             "spotify": spotify_status,
             "smarthome": smarthome_status,
+            "weather": weather_status,
+            "notifications": notification_backends if notification_backends else "not configured",
+            "routines": routines_count,
         },
         "stats": {
             "projects_built": projects_count,
