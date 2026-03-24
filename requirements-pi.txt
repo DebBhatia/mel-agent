@@ -6,3 +6,7 @@ PyAudio>=0.2.14
 openai-whisper>=20240930
 openwakeword>=0.6.0
 onnxruntime>=1.19.0
+# tflite-runtime is required by openwakeword but not available on pip for
+# Python 3.12+ on ARM64. Install via: pip install tflite-runtime from the
+# official wheel URL, or use tensorflow-lite as a fallback.
+tflite-runtime>=2.14.0; python_version < "3.12"

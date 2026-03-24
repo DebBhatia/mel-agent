@@ -43,7 +43,16 @@ source venv/bin/activate
 echo ""
 echo "[3/6] Installing Python dependencies..."
 pip install --upgrade pip -q
-pip install -r requirements-pi.txt -q
+pip install -r requirements-pi.txt -q || true
+
+# Handle tflite-runtime for Python 3.12+ on ARM64 (not on PyPI)
+PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
+if [ "$PYTHON_MINOR" -ge 12 ]; then
+    echo "  Python 3.12+ detected — installing tflite-runtime from piwheels..."
+    pip install --extra-index-url https://www.piwheels.org/simple tflite-runtime -q || \
+    pip install tensorflow-lite -q || \
+    echo "  WARNING: Could not install tflite-runtime. Wake word detection may not work."
+fi
 
 # 4. Install Piper TTS (local, no cloud needed)
 echo ""
