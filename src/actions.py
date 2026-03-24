@@ -21,14 +21,28 @@ logger = logging.getLogger("actions")
 # ─────────────────────────────────────────────
 class CalendarPlugin:
     """
-    Manages Google Calendar events.
-    Uses Google Calendar API with OAuth2.
-    Credentials stored locally - never sent to cloud.
+    Manages Google Calendar events via Google Calendar API.
+
+    Supports two auth modes (in priority order):
+    1. **Service Account** (recommended) — uses a JSON key file that never expires.
+       Set GOOGLE_SERVICE_ACCOUNT_PATH or place file at ~/.config/agent/google_service_account.json
+       Then share your calendar with the service account email (grant "Make changes to events").
+       Set GOOGLE_CALENDAR_ID to your email (e.g. debbhatia@gmail.com).
+    2. **OAuth2** (legacy) — uses browser-based login with refresh token.
+       Requires GOOGLE_CREDENTIALS_PATH and manual first-run browser auth.
     """
 
     SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
     def __init__(self):
+        # Service account (preferred — never expires)
+        self.service_account_path = os.getenv(
+            "GOOGLE_SERVICE_ACCOUNT_PATH",
+            os.path.expanduser("~/.config/agent/google_service_account.json")
+        )
+        self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+
+        # OAuth2 (legacy fallback)
         self.credentials_path = os.getenv(
             "GOOGLE_CREDENTIALS_PATH",
             os.path.expanduser("~/.config/agent/google_credentials.json")
@@ -38,9 +52,30 @@ class CalendarPlugin:
             os.path.expanduser("~/.config/agent/google_token.json")
         )
         self.service = None
+        self._auth_mode = None
 
     def authenticate(self):
-        """Authenticate with Google Calendar API."""
+        """Authenticate with Google Calendar API.
+
+        Tries service account first (zero-maintenance), then falls back to OAuth2.
+        """
+        # ── Attempt 1: Service Account (recommended) ──
+        if os.path.exists(self.service_account_path):
+            try:
+                from google.oauth2 import service_account
+                from googleapiclient.discovery import build
+
+                creds = service_account.Credentials.from_service_account_file(
+                    self.service_account_path, scopes=self.SCOPES
+                )
+                self.service = build("calendar", "v3", credentials=creds)
+                self._auth_mode = "service_account"
+                logger.info("Google Calendar authenticated via service account")
+                return
+            except Exception as e:
+                logger.warning(f"Service account auth failed: {e}")
+
+        # ── Attempt 2: OAuth2 (legacy) ──
         try:
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
@@ -55,24 +90,44 @@ class CalendarPlugin:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
+                    if not os.path.exists(self.credentials_path):
+                        logger.error(
+                            "No Google credentials found. "
+                            "Place a service account key at %s (recommended) "
+                            "or OAuth credentials at %s",
+                            self.service_account_path,
+                            self.credentials_path,
+                        )
+                        return
                     flow = InstalledAppFlow.from_client_secrets_file(
                         self.credentials_path, self.SCOPES
                     )
                     creds = flow.run_local_server(port=0)
+                os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
                 with open(self.token_path, "w") as f:
                     f.write(creds.to_json())
 
             self.service = build("calendar", "v3", credentials=creds)
-            logger.info("Google Calendar authenticated")
+            self._auth_mode = "oauth2"
+            logger.info("Google Calendar authenticated via OAuth2")
         except Exception as e:
             logger.error(f"Calendar auth failed: {e}")
+
+    def _get_calendar_id(self) -> str:
+        """Return the calendar ID to use for API calls."""
+        return self.calendar_id
 
     async def create_event(self, params: dict) -> str:
         """Create a calendar event."""
         if not self.service:
             self.authenticate()
             if not self.service:
-                return "Calendar not connected. Run setup first."
+                return (
+                    "Calendar not connected. "
+                    "Place a Google service account key at "
+                    f"{self.service_account_path} and set "
+                    "GOOGLE_CALENDAR_ID in your .env file."
+                )
 
         event = {
             "summary": params.get("title", "New Event"),
@@ -96,7 +151,7 @@ class CalendarPlugin:
 
         try:
             result = self.service.events().insert(
-                calendarId="primary", body=event
+                calendarId=self._get_calendar_id(), body=event
             ).execute()
             # Format a friendly response
             from datetime import datetime
@@ -122,7 +177,7 @@ class CalendarPlugin:
 
         try:
             result = self.service.events().list(
-                calendarId="primary",
+                calendarId=self._get_calendar_id(),
                 timeMin=now,
                 timeMax=time_max,
                 maxResults=10,
@@ -155,7 +210,7 @@ class CalendarPlugin:
 
         try:
             result = self.service.events().list(
-                calendarId="primary",
+                calendarId=self._get_calendar_id(),
                 timeMin=start,
                 timeMax=end,
                 singleEvents=True,

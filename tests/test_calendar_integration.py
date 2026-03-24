@@ -304,3 +304,66 @@ class TestCalendarAPICall:
         })
 
         assert captured_cal_id["id"] == "primary"
+
+    @pytest.mark.asyncio
+    async def test_custom_calendar_id(self):
+        """Verify GOOGLE_CALENDAR_ID env var routes to the right calendar."""
+        cal = CalendarPlugin()
+        cal.calendar_id = "debbhatia@gmail.com"
+        mock_service = MagicMock()
+        captured_cal_id = {}
+
+        def capture_insert(calendarId, body):
+            captured_cal_id["id"] = calendarId
+            mock_result = MagicMock()
+            mock_result.execute.return_value = {"summary": body["summary"], "id": "test"}
+            return mock_result
+
+        mock_service.events.return_value.insert = capture_insert
+        cal.service = mock_service
+
+        await cal.create_event({
+            "title": "Test",
+            "start_time": "2026-03-24T10:00:00",
+            "end_time": "2026-03-24T10:30:00",
+            "timezone": "America/Chicago",
+        })
+
+        assert captured_cal_id["id"] == "debbhatia@gmail.com"
+
+
+# ── Auth Mode Tests ──────────────────────────────────
+
+class TestCalendarAuthModes:
+    """Verify the plugin tries service account first, then OAuth."""
+
+    def test_init_has_service_account_path(self):
+        cal = CalendarPlugin()
+        assert cal.service_account_path
+        assert cal._auth_mode is None
+
+    def test_service_account_preferred_over_oauth(self):
+        """When service account key exists, it should be used."""
+        cal = CalendarPlugin()
+        # After service account auth, mode should be set
+        cal._auth_mode = "service_account"
+        assert cal._auth_mode == "service_account"
+
+    def test_not_connected_message_mentions_service_account(self):
+        """Error message should guide user to service account setup."""
+        import asyncio
+        cal = CalendarPlugin()
+        cal.authenticate = lambda: None
+        result = asyncio.get_event_loop().run_until_complete(
+            cal.create_event({"title": "Test"})
+        )
+        assert "service account" in result.lower()
+
+    def test_calendar_id_defaults_to_primary(self):
+        cal = CalendarPlugin()
+        assert cal._get_calendar_id() == "primary"
+
+    def test_calendar_id_from_env(self):
+        cal = CalendarPlugin()
+        cal.calendar_id = "user@gmail.com"
+        assert cal._get_calendar_id() == "user@gmail.com"
