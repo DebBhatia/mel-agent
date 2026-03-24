@@ -78,21 +78,52 @@ class WakeWordDetector:
                 wakeword_models=list(self.WAKE_MODELS.keys()),
                 inference_framework="onnx",
             )
+            self.use_keyboard_fallback = False
             logger.info(
                 f"Wake word models loaded: {list(self.WAKE_MODELS.keys())}"
             )
         except ImportError:
             logger.warning(
-                "OpenWakeWord not installed. Install with: "
-                "pip install openwakeword"
+                "OpenWakeWord not available — using keyboard fallback. "
+                "Press Enter for command mode, type 'home' + Enter for homecoming mode."
             )
             self.model = None
+            self.use_keyboard_fallback = True
+            self._keyboard_triggered = None
+            self._start_keyboard_listener()
+
+    def _start_keyboard_listener(self):
+        """Start a background thread to listen for keyboard input."""
+        import threading
+
+        def _listen():
+            while self.is_listening:
+                try:
+                    line = input().strip().lower()
+                    if line in ("home", "h"):
+                        self._keyboard_triggered = WakeMode.HOMECOMING
+                    else:
+                        self._keyboard_triggered = WakeMode.COMMAND
+                except EOFError:
+                    break
+
+        thread = threading.Thread(target=_listen, daemon=True)
+        thread.start()
 
     def detect(self, audio_chunk: np.ndarray) -> WakeMode | None:
         """
         Check if any wake word was spoken.
         Returns WakeMode if detected, None otherwise.
+        Falls back to keyboard trigger if OpenWakeWord is unavailable.
         """
+        if self.use_keyboard_fallback:
+            if self._keyboard_triggered is not None:
+                mode = self._keyboard_triggered
+                self._keyboard_triggered = None
+                logger.info(f"Keyboard trigger → {mode.value} mode")
+                return mode
+            return None
+
         if self.model is None:
             return None
 
@@ -308,9 +339,16 @@ class VoiceAgent:
             raise SystemExit(1)
 
         self.wake_detector.initialize()
-        self.stt.initialize()
-        self.audio.start()
-        logger.info("Voice Agent ready! Listening for wake word...")
+        self.keyboard_mode = self.wake_detector.use_keyboard_fallback
+
+        if self.keyboard_mode:
+            logger.info("Running in keyboard mode (no wake word engine).")
+            logger.info("Audio capture and Whisper STT will be skipped — using text input.")
+        else:
+            self.stt.initialize()
+            self.audio.start()
+
+        logger.info("Voice Agent ready!")
 
     async def _check_orchestrator(self) -> bool:
         """Verify orchestrator is reachable and API key works."""
@@ -339,9 +377,15 @@ class VoiceAgent:
         """Main 24/7 loop."""
         await self.initialize()
 
+        if self.keyboard_mode:
+            await self._run_keyboard_mode()
+        else:
+            await self._run_voice_mode()
+
+    async def _run_voice_mode(self):
+        """Standard voice mode with wake word detection."""
         while True:
             try:
-                # Phase 1: Listen for wake word (low power)
                 audio_chunk = self.audio.read_chunk()
 
                 if not self.is_active:
@@ -350,10 +394,8 @@ class VoiceAgent:
                         self.is_active = True
 
                         if wake_mode == WakeMode.HOMECOMING:
-                            # "Wake up daddy is home" → full greeting + calendar
                             await self._homecoming_greeting()
                         else:
-                            # "Mel" → ready for any command
                             await self.tts.speak("I'm here. What do you need?")
                             await self._process_command()
 
@@ -367,6 +409,43 @@ class VoiceAgent:
                 await asyncio.sleep(1)
 
         self.audio.stop()
+
+    async def _run_keyboard_mode(self):
+        """Text-based fallback when wake word engine is unavailable."""
+        print("\n" + "=" * 50)
+        print("  MEL VOICE AGENT — Keyboard Mode")
+        print("=" * 50)
+        print("  Press Enter to talk to Mel (type your command)")
+        print("  Type 'home' for homecoming greeting")
+        print("  Type 'quit' to exit")
+        print("=" * 50 + "\n")
+
+        while True:
+            try:
+                user_input = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: input("You > ").strip()
+                )
+
+                if not user_input:
+                    continue
+                if user_input.lower() in ("quit", "exit", "q"):
+                    logger.info("Shutting down...")
+                    break
+                if user_input.lower() in ("home", "h"):
+                    await self._homecoming_greeting()
+                    continue
+
+                # Send typed command directly to orchestrator
+                response = await self._send_to_orchestrator(user_input)
+                print(f"Mel > {response}\n")
+                await self.tts.speak(response)
+
+            except (KeyboardInterrupt, EOFError):
+                logger.info("Shutting down...")
+                break
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                await asyncio.sleep(1)
 
     def _get_time_greeting(self) -> tuple[str, str]:
         """Return time-appropriate greeting and a friendly follow-up."""
