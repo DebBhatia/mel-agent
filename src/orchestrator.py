@@ -728,9 +728,40 @@ class AgentOrchestrator:
         # Parse natural language into event params
         from datetime import date as date_cls
         today = date_cls.today().isoformat()
+        import re
+
+        # Extract a meaningful event title from the user input
+        # Strip common command phrases to isolate the actual event description
+        event_title = user_input
+        # Remove leading command phrases like "can you set up an appointment on my calendar for 4:00 p.m."
+        strip_patterns = [
+            r'^(?:can you |could you |please |hey mel[,]?\s*)?',
+            r'(?:set up |create |add |schedule |book |make |put )',
+            r'(?:an? )?(?:event|appointment|meeting|reminder|block)?\s*',
+            r'(?:on |in |to )?(?:my |the )?(?:calendar|schedule|gcal)?\s*',
+            r'(?:for |at |on )?\s*',
+            r'(?:\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)?)\s*',
+            r'(?:today|tomorrow|tonight)?\s*',
+        ]
+        title_clean = user_input.strip()
+        for pat in strip_patterns:
+            title_clean = re.sub(pat, '', title_clean, count=1, flags=re.IGNORECASE).strip()
+
+        # If we stripped too much or nothing meaningful remains, try to grab text after "to" or "I want to"
+        if len(title_clean) < 3:
+            purpose_match = re.search(r'(?:i want to|to|for)\s+(.+)', user_input, re.IGNORECASE)
+            if purpose_match:
+                title_clean = purpose_match.group(1).strip()
+
+        # Final fallback
+        if len(title_clean) < 3:
+            title_clean = summary if summary and len(summary) < 60 else "New Event"
+
+        # Capitalize first letter
+        event_title = title_clean[0].upper() + title_clean[1:] if title_clean else "New Event"
 
         params = {
-            "title": summary or user_input,
+            "title": event_title,
             "start_time": f"{today}T13:30:00",
             "end_time": f"{today}T14:00:00",
             "location": "",
@@ -739,12 +770,25 @@ class AgentOrchestrator:
         }
 
         # Try to extract specifics from the input
-        import re
-        time_match = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', user_input, re.IGNORECASE)
+        # Support formats: 4:00pm, 4:00 pm, 4:00 p.m., 4:00p.m., 4 pm, 4 p.m.
+        time_match = re.search(r'(\d{1,2}):(\d{2})\s*(?:(a\.?m\.?|p\.?m\.?))?', user_input, re.IGNORECASE)
+        if not time_match:
+            # Try format without colon: "4 pm", "4pm", "4 p.m."
+            time_match = re.search(r'(\d{1,2})\s+(a\.?m\.?|p\.?m\.?)', user_input, re.IGNORECASE)
         if time_match:
             hour = int(time_match.group(1))
-            minute = time_match.group(2)
-            ampm = (time_match.group(3) or '').lower()
+            groups = time_match.groups()
+            # Determine minutes and am/pm based on which regex matched
+            if len(groups) == 3:
+                # Colon format: hour:min ampm
+                minute = groups[1] if groups[1] else "00"
+                ampm_raw = groups[2] or ''
+            else:
+                # No-colon format: hour ampm (no minutes)
+                minute = "00"
+                ampm_raw = groups[1] or ''
+            # Normalize am/pm (strip dots)
+            ampm = ampm_raw.replace('.', '').strip().lower()
             if ampm == 'pm' and hour < 12:
                 hour += 12
             elif ampm == 'am' and hour == 12:

@@ -98,7 +98,14 @@ class CalendarPlugin:
             result = self.service.events().insert(
                 calendarId="primary", body=event
             ).execute()
-            return f"Event created: {result.get('summary')} on {params.get('start_time')}"
+            # Format a friendly response
+            from datetime import datetime
+            try:
+                start_dt = datetime.fromisoformat(params.get("start_time", ""))
+                friendly_time = start_dt.strftime("%-I:%M %p on %B %-d, %Y")
+            except (ValueError, TypeError):
+                friendly_time = params.get("start_time", "")
+            return f"Done! I've added \"{result.get('summary')}\" to your calendar at {friendly_time}."
         except Exception as e:
             return f"Failed to create event: {e}"
 
