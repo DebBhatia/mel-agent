@@ -1,11 +1,13 @@
 """
 WAKE WORD LISTENER - Raspberry Pi
 ===================================
-Listens for wake word using OpenWakeWord,
+Listens for wake word using Porcupine (Picovoice),
 then activates the agent and starts voice interaction.
 
 Runs 24/7 on minimal resources. Only processes audio
 after wake word is detected.
+
+Falls back to keyboard/text mode if Porcupine is unavailable.
 
 Security: API key required to talk to orchestrator.
 No voice data or commands are logged.
@@ -40,6 +42,10 @@ TTS_ENGINE = os.getenv("TTS_ENGINE", "piper")  # piper (local) or elevenlabs (cl
 PIPER_MODEL = os.getenv("PIPER_MODEL", "en_US-lessac-medium.onnx")
 USER_NAME = os.getenv("USER_NAME", "Deb")
 TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+PICOVOICE_ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY", "")
+# Paths to custom .ppn wake word model files (train at https://console.picovoice.ai/)
+PORCUPINE_KEYWORD_COMMAND = os.getenv("PORCUPINE_KEYWORD_COMMAND", "")  # custom "Mel" .ppn file
+PORCUPINE_KEYWORD_HOMECOMING = os.getenv("PORCUPINE_KEYWORD_HOMECOMING", "")  # custom homecoming .ppn file
 
 
 class WakeMode(Enum):
@@ -50,59 +56,144 @@ class WakeMode(Enum):
 
 class WakeWordDetector:
     """
-    Detects two wake words using OpenWakeWord:
-      1. "wake up daddy is home" → homecoming greeting + calendar briefing
-      2. "Mel" → standard command mode
+    Detects wake words using Porcupine (Picovoice).
 
-    Runs entirely locally - no audio sent anywhere.
+    Supports two wake words:
+      1. Command wake word (e.g. "Mel") → standard command mode
+      2. Homecoming wake word → greeting + calendar briefing
+
+    Train custom wake words at https://console.picovoice.ai/
+    Set PICOVOICE_ACCESS_KEY and PORCUPINE_KEYWORD_* paths in .env
+
+    Falls back to built-in "Jarvis" / "Computer" keywords if no
+    custom models are configured, or to keyboard mode if Porcupine
+    is not installed.
+
+    Runs entirely locally — no audio sent anywhere.
     """
 
-    # Map OpenWakeWord model names → our WakeMode
-    # "hey_jarvis" is closest built-in to "wake up daddy is home"
-    # "alexa" is closest built-in to short name "Mel"
-    # Replace these with custom-trained models for better accuracy
-    WAKE_MODELS = {
-        "hey_jarvis": WakeMode.HOMECOMING,
-        "alexa": WakeMode.COMMAND,
-    }
-
     def __init__(self):
-        self.model = None
+        self.porcupine = None
+        self.keyword_mode_map: list[WakeMode] = []
         self.is_listening = True
+        self.use_keyboard_fallback = False
+        self._keyboard_triggered = None
 
     def initialize(self):
-        """Load the wake word models."""
+        """Load Porcupine wake word engine."""
         try:
-            from openwakeword.model import Model
-            self.model = Model(
-                wakeword_models=list(self.WAKE_MODELS.keys()),
-                inference_framework="onnx",
-            )
-            logger.info(
-                f"Wake word models loaded: {list(self.WAKE_MODELS.keys())}"
-            )
+            import pvporcupine
         except ImportError:
             logger.warning(
-                "OpenWakeWord not installed. Install with: "
-                "pip install openwakeword"
+                "pvporcupine not installed — using keyboard fallback. "
+                "Install with: pip install pvporcupine"
             )
-            self.model = None
+            self._enable_keyboard_fallback()
+            return
+
+        if not PICOVOICE_ACCESS_KEY:
+            logger.warning(
+                "PICOVOICE_ACCESS_KEY not set — using keyboard fallback. "
+                "Get a free key at https://console.picovoice.ai/"
+            )
+            self._enable_keyboard_fallback()
+            return
+
+        try:
+            # Build keyword lists — custom .ppn files or built-in fallbacks
+            keyword_paths = []
+            keywords = []
+            self.keyword_mode_map = []
+
+            if PORCUPINE_KEYWORD_COMMAND and Path(PORCUPINE_KEYWORD_COMMAND).exists():
+                keyword_paths.append(PORCUPINE_KEYWORD_COMMAND)
+                self.keyword_mode_map.append(WakeMode.COMMAND)
+                logger.info(f"Custom command wake word: {PORCUPINE_KEYWORD_COMMAND}")
+            else:
+                keywords.append("jarvis")
+                self.keyword_mode_map.append(WakeMode.COMMAND)
+                logger.info("Using built-in 'Jarvis' as command wake word")
+
+            if PORCUPINE_KEYWORD_HOMECOMING and Path(PORCUPINE_KEYWORD_HOMECOMING).exists():
+                keyword_paths.append(PORCUPINE_KEYWORD_HOMECOMING)
+                self.keyword_mode_map.append(WakeMode.HOMECOMING)
+                logger.info(f"Custom homecoming wake word: {PORCUPINE_KEYWORD_HOMECOMING}")
+            else:
+                keywords.append("computer")
+                self.keyword_mode_map.append(WakeMode.HOMECOMING)
+                logger.info("Using built-in 'Computer' as homecoming wake word")
+
+            create_kwargs = {"access_key": PICOVOICE_ACCESS_KEY}
+            if keyword_paths:
+                create_kwargs["keyword_paths"] = keyword_paths
+            if keywords:
+                create_kwargs["keywords"] = keywords
+
+            self.porcupine = pvporcupine.create(**create_kwargs)
+            logger.info("Porcupine wake word engine initialized")
+
+        except Exception as e:
+            logger.error(f"Porcupine init failed: {e}")
+            self._enable_keyboard_fallback()
+
+    def _enable_keyboard_fallback(self):
+        """Enable keyboard-based wake word trigger."""
+        import threading
+        self.use_keyboard_fallback = True
+        logger.info(
+            "Keyboard mode: press Enter for command mode, "
+            "type 'home' + Enter for homecoming mode."
+        )
+
+        def _listen():
+            while self.is_listening:
+                try:
+                    line = input().strip().lower()
+                    if line in ("home", "h"):
+                        self._keyboard_triggered = WakeMode.HOMECOMING
+                    else:
+                        self._keyboard_triggered = WakeMode.COMMAND
+                except EOFError:
+                    break
+
+        thread = threading.Thread(target=_listen, daemon=True)
+        thread.start()
+
+    @property
+    def frame_length(self) -> int:
+        """Audio frame length required by Porcupine."""
+        if self.porcupine:
+            return self.porcupine.frame_length
+        return CHUNK_SIZE
 
     def detect(self, audio_chunk: np.ndarray) -> WakeMode | None:
         """
         Check if any wake word was spoken.
         Returns WakeMode if detected, None otherwise.
         """
-        if self.model is None:
+        if self.use_keyboard_fallback:
+            if self._keyboard_triggered is not None:
+                mode = self._keyboard_triggered
+                self._keyboard_triggered = None
+                logger.info(f"Keyboard trigger → {mode.value} mode")
+                return mode
             return None
 
-        prediction = self.model.predict(audio_chunk)
-        for model_name, score in prediction.items():
-            if score > 0.5:
-                mode = self.WAKE_MODELS.get(model_name, WakeMode.COMMAND)
-                logger.info(f"Wake word '{model_name}' detected (score: {score:.2f}) → {mode.value} mode")
-                return mode
+        if self.porcupine is None:
+            return None
+
+        keyword_index = self.porcupine.process(audio_chunk)
+        if keyword_index >= 0:
+            mode = self.keyword_mode_map[keyword_index]
+            logger.info(f"Wake word detected (index {keyword_index}) → {mode.value} mode")
+            return mode
         return None
+
+    def cleanup(self):
+        """Release Porcupine resources."""
+        if self.porcupine:
+            self.porcupine.delete()
+            self.porcupine = None
 
 
 class AudioCapture:
@@ -308,9 +399,14 @@ class VoiceAgent:
             raise SystemExit(1)
 
         self.wake_detector.initialize()
-        self.stt.initialize()
-        self.audio.start()
-        logger.info("Voice Agent ready! Listening for wake word...")
+        self.keyboard_mode = self.wake_detector.use_keyboard_fallback
+
+        if self.keyboard_mode:
+            logger.info("Running in keyboard/text mode (no wake word engine).")
+        else:
+            self.stt.initialize()
+            self.audio.start()
+            logger.info("Voice Agent ready! Listening for wake word...")
 
     async def _check_orchestrator(self) -> bool:
         """Verify orchestrator is reachable and API key works."""
@@ -339,9 +435,18 @@ class VoiceAgent:
         """Main 24/7 loop."""
         await self.initialize()
 
+        try:
+            if self.keyboard_mode:
+                await self._run_keyboard_mode()
+            else:
+                await self._run_voice_mode()
+        finally:
+            self.wake_detector.cleanup()
+
+    async def _run_voice_mode(self):
+        """Standard voice mode with Porcupine wake word detection."""
         while True:
             try:
-                # Phase 1: Listen for wake word (low power)
                 audio_chunk = self.audio.read_chunk()
 
                 if not self.is_active:
@@ -350,10 +455,8 @@ class VoiceAgent:
                         self.is_active = True
 
                         if wake_mode == WakeMode.HOMECOMING:
-                            # "Wake up daddy is home" → full greeting + calendar
                             await self._homecoming_greeting()
                         else:
-                            # "Mel" → ready for any command
                             await self.tts.speak("I'm here. What do you need?")
                             await self._process_command()
 
@@ -367,6 +470,42 @@ class VoiceAgent:
                 await asyncio.sleep(1)
 
         self.audio.stop()
+
+    async def _run_keyboard_mode(self):
+        """Text-based fallback when wake word engine is unavailable."""
+        print("\n" + "=" * 50)
+        print("  MEL VOICE AGENT — Keyboard Mode")
+        print("=" * 50)
+        print("  Type your command and press Enter")
+        print("  Type 'home' for homecoming greeting")
+        print("  Type 'quit' to exit")
+        print("=" * 50 + "\n")
+
+        while True:
+            try:
+                user_input = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: input("You > ").strip()
+                )
+
+                if not user_input:
+                    continue
+                if user_input.lower() in ("quit", "exit", "q"):
+                    logger.info("Shutting down...")
+                    break
+                if user_input.lower() in ("home", "h"):
+                    await self._homecoming_greeting()
+                    continue
+
+                response = await self._send_to_orchestrator(user_input)
+                print(f"Mel > {response}\n")
+                await self.tts.speak(response)
+
+            except (KeyboardInterrupt, EOFError):
+                logger.info("Shutting down...")
+                break
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                await asyncio.sleep(1)
 
     def _get_time_greeting(self) -> tuple[str, str]:
         """Return time-appropriate greeting and a friendly follow-up."""

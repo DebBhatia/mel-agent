@@ -33,18 +33,29 @@ class TestWakeMode:
 # ── WakeWordDetector ──────────────────────────
 
 class TestWakeWordDetector:
-    def test_no_model_returns_none(self):
+    def test_no_engine_returns_none(self):
         detector = WakeWordDetector()
-        detector.model = None
+        # No porcupine loaded, not in keyboard fallback
+        detector.porcupine = None
+        detector.use_keyboard_fallback = False
         chunk = np.zeros(CHUNK_SIZE, dtype=np.int16)
         assert detector.detect(chunk) is None
 
-    def test_wake_models_mapping(self):
+    def test_keyboard_fallback_returns_none_when_not_triggered(self):
         detector = WakeWordDetector()
-        assert "hey_jarvis" in detector.WAKE_MODELS
-        assert "alexa" in detector.WAKE_MODELS
-        assert detector.WAKE_MODELS["hey_jarvis"] == WakeMode.HOMECOMING
-        assert detector.WAKE_MODELS["alexa"] == WakeMode.COMMAND
+        detector.use_keyboard_fallback = True
+        detector._keyboard_triggered = None
+        chunk = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        assert detector.detect(chunk) is None
+
+    def test_keyboard_fallback_returns_mode_when_triggered(self):
+        detector = WakeWordDetector()
+        detector.use_keyboard_fallback = True
+        detector._keyboard_triggered = WakeMode.COMMAND
+        chunk = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        assert detector.detect(chunk) == WakeMode.COMMAND
+        # Should be consumed after detection
+        assert detector._keyboard_triggered is None
 
 
 # ── VoiceAgent._get_time_greeting ─────────────

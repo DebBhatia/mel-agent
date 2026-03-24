@@ -45,14 +45,10 @@ echo "[3/6] Installing Python dependencies..."
 pip install --upgrade pip -q
 pip install -r requirements-pi.txt -q || true
 
-# Handle tflite-runtime for Python 3.12+ on ARM64 (not on PyPI)
-PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
-if [ "$PYTHON_MINOR" -ge 12 ]; then
-    echo "  Python 3.12+ detected — installing tflite-runtime from piwheels..."
-    pip install --extra-index-url https://www.piwheels.org/simple tflite-runtime -q || \
-    pip install tensorflow-lite -q || \
-    echo "  WARNING: Could not install tflite-runtime. Wake word detection may not work."
-fi
+# Porcupine wake word engine (replaces openwakeword + tflite-runtime)
+# Requires a free Picovoice access key: https://console.picovoice.ai/
+echo "  Note: Set PICOVOICE_ACCESS_KEY in .env for wake word detection."
+echo "  Get a free key at https://console.picovoice.ai/"
 
 # 4. Install Piper TTS (local, no cloud needed)
 echo ""
@@ -83,8 +79,14 @@ ORCHESTRATOR_URL=http://YOUR_SERVER_IP:8000
 # REQUIRED: API key from your server's .env file
 AGENT_API_KEY=mel-YOUR_KEY_HERE
 
-# Wake word — must match the server's WAKE_PHRASE
-WAKE_PHRASE=wake up daddy is home
+# REQUIRED: Picovoice access key for wake word detection (free)
+# Get yours at https://console.picovoice.ai/
+PICOVOICE_ACCESS_KEY=
+
+# Custom wake word models (optional — train at https://console.picovoice.ai/)
+# Without these, built-in "Jarvis" (command) and "Computer" (homecoming) are used
+# PORCUPINE_KEYWORD_COMMAND=path/to/mel.ppn
+# PORCUPINE_KEYWORD_HOMECOMING=path/to/wake-up-daddy-is-home.ppn
 
 # TTS engine: "piper" (local, free) or "elevenlabs" (cloud, better quality)
 TTS_ENGINE=piper
