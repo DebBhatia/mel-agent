@@ -207,10 +207,11 @@ User request: """
         elif any(kw in text for kw in ["my reminders", "pending reminders", "list reminders",
                                         "cancel reminder", "delete reminder"]):
             return {"category": "REMINDER", "intent": "manage", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "app", "script", "dashboard", "landing page"]):
-            return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
-        elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "appointment"]):
+        elif any(kw in text for kw in ["schedule", "calendar", "meeting", "event", "appointment",
+                                        "book an appointment", "book a reminder", "book a meeting"]):
             return {"category": "CALENDAR", "intent": "manage", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "web app", "mobile app", "script", "dashboard", "landing page"]):
+            return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["book", "reservation", "table", "hotel", "reserve"]):
             return {"category": "RESERVATION", "intent": "book", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["send", "text", "email", "message", "call"]):

@@ -13,7 +13,7 @@ from datetime import date
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from actions import CalendarPlugin
-from orchestrator import AgentOrchestrator, ActionRegistry
+from orchestrator import AgentOrchestrator, ActionRegistry, IntentClassifier
 
 
 # ── Helpers ──────────────────────────────────────────
@@ -367,3 +367,58 @@ class TestCalendarAuthModes:
         cal = CalendarPlugin()
         cal.calendar_id = "user@gmail.com"
         assert cal._get_calendar_id() == "user@gmail.com"
+
+
+# ── Intent Classifier Tests ──────────────────────────
+
+class TestCalendarClassification:
+    """Verify calendar inputs are classified as CALENDAR, not CODE or RESERVATION."""
+
+    @pytest.fixture
+    def classifier(self):
+        return IntentClassifier()
+
+    def test_book_appointment_is_calendar(self, classifier):
+        """'book an appointment' was misrouted to RESERVATION."""
+        result = classifier._keyword_classify("can you book an appointment")
+        assert result["category"] == "CALENDAR"
+
+    def test_book_reminder_on_calendar(self, classifier):
+        """'book a reminder on my calendar' was misrouted to CODE (via 'app' in 'appointment')."""
+        result = classifier._keyword_classify(
+            "can I book a reminder on my calendar for 2:00 p.m. today to go for a doctor appointment"
+        )
+        assert result["category"] == "CALENDAR"
+
+    def test_create_appointment_is_calendar(self, classifier):
+        """'create an appointment' should be CALENDAR, not CODE (via 'create')."""
+        result = classifier._keyword_classify("create an appointment on my calendar for dentist")
+        assert result["category"] == "CALENDAR"
+
+    def test_schedule_meeting_is_calendar(self, classifier):
+        result = classifier._keyword_classify("schedule a meeting at 3 pm")
+        assert result["category"] == "CALENDAR"
+
+    def test_add_event_is_calendar(self, classifier):
+        result = classifier._keyword_classify("add an event to my calendar")
+        assert result["category"] == "CALENDAR"
+
+    def test_set_up_appointment_is_calendar(self, classifier):
+        result = classifier._keyword_classify(
+            "can you set up an appointment on my calendar for 4:00 p.m. today I want to eat my vitamins"
+        )
+        assert result["category"] == "CALENDAR"
+
+    def test_build_website_is_code(self, classifier):
+        """Ensure CODE classification still works for actual code requests."""
+        result = classifier._keyword_classify("build me a website for my portfolio")
+        assert result["category"] == "CODE"
+
+    def test_create_web_app_is_code(self, classifier):
+        result = classifier._keyword_classify("create a web app for tracking expenses")
+        assert result["category"] == "CODE"
+
+    def test_book_restaurant_is_reservation(self, classifier):
+        """Ensure RESERVATION still works when no calendar keywords present."""
+        result = classifier._keyword_classify("book a table at an Italian restaurant")
+        assert result["category"] == "RESERVATION"
