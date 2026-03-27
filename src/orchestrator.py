@@ -731,32 +731,82 @@ class AgentOrchestrator:
         today = date_cls.today().isoformat()
         import re
 
-        # Extract a meaningful event title from the user input
-        # Strip common command phrases to isolate the actual event description
-        event_title = user_input
-        # Remove leading command phrases like "can you set up an appointment on my calendar for 4:00 p.m."
-        strip_patterns = [
-            r'^(?:can you |could you |please |hey mel[,]?\s*)?',
-            r'(?:set up |create |add |schedule |book |make |put )',
-            r'(?:an? )?(?:event|appointment|meeting|reminder|block)?\s*',
-            r'(?:on |in |to )?(?:my |the )?(?:calendar|schedule|gcal)?\s*',
-            r'(?:for |at |on )?\s*',
-            r'(?:\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)?)\s*',
-            r'(?:today|tomorrow|tonight)?\s*',
-        ]
-        title_clean = user_input.strip()
-        for pat in strip_patterns:
-            title_clean = re.sub(pat, '', title_clean, count=1, flags=re.IGNORECASE).strip()
+        # Extract a meaningful event title from the user input.
+        # Strategy: find the last "for <purpose>" phrase, which is where people
+        # naturally put the event description. Fall back to stripping command words.
+        title_clean = ""
 
-        # If we stripped too much or nothing meaningful remains, try to grab text after "to" or "I want to"
-        if len(title_clean) < 3:
-            purpose_match = re.search(r'(?:i want to|to|for)\s+(.+)', user_input, re.IGNORECASE)
-            if purpose_match:
-                title_clean = purpose_match.group(1).strip()
+        # Primary: scan all "for X" segments and pick the last meaningful one (not time/date).
+        # "book appointment for today for 2pm for doctor appointment" → "doctor appointment"
+        # "create appointment on calendar for dentist visit at 2:30 pm" → "dentist visit"
+        # Also handle "to go for/to X"
+        time_date_pat = re.compile(
+            r'^(?:\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|today|tomorrow|tonight)\b', re.IGNORECASE
+        )
+        # Split on "for" or "to go for/to" and examine each segment
+        segments = re.split(r'\b(?:for|to go (?:for|to))\s+', user_input, flags=re.IGNORECASE)
+        # Walk segments in reverse; first non-time/date segment is our title
+        for seg in reversed(segments[1:]):  # skip the first segment (command prefix)
+            candidate = seg.strip()
+            # Remove trailing time expressions
+            candidate = re.sub(
+                r'\s*(?:at|for|on|by)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\s*(?:today|tomorrow|tonight)?.*$',
+                '', candidate, flags=re.IGNORECASE
+            ).strip()
+            candidate = re.sub(r'\s*\b(?:today|tomorrow|tonight)\b\s*$', '', candidate, flags=re.IGNORECASE).strip()
+            # Skip pure time/date segments
+            if candidate and not time_date_pat.match(candidate):
+                title_clean = candidate
+                break
 
-        # Final fallback
+        # Also check "to go to/for" pattern
+        if not title_clean:
+            go_match = re.search(r'to go (?:for|to)\s+(?:a\s+)?(.+?)(?:\s+(?:at|for|on)\s+\d|$)', user_input, re.IGNORECASE)
+            if go_match:
+                title_clean = go_match.group(1).strip()
+
+        # Secondary: "I want to <purpose>"
         if len(title_clean) < 3:
-            title_clean = summary if summary and len(summary) < 60 else "New Event"
+            want_match = re.search(r'i want to\s+(.+)', user_input, re.IGNORECASE)
+            if want_match:
+                title_clean = want_match.group(1).strip()
+
+        # Tertiary: strip command prefix and extract what remains
+        if len(title_clean) < 3:
+            title_clean = re.sub(
+                r'^(?:can (?:you|i) |could you |please |hey mel[,]?\s*)*'
+                r'(?:set up |create |add |schedule |book |make |put )?'
+                r'(?:me )?(?:an? )?(?:event|appointment|meeting|reminder|block)\s*'
+                r'(?:on |in |to )?(?:my |the )?(?:calendar|schedule|gcal)?\s*',
+                '', user_input.strip(), count=1, flags=re.IGNORECASE
+            ).strip()
+            # If nothing matched (e.g. "schedule a meeting"), try stripping just the verb
+            if title_clean == user_input.strip():
+                title_clean = re.sub(
+                    r'^(?:can (?:you|i) |could you |please |hey mel[,]?\s*)*'
+                    r'(?:set up |create |add |schedule |book |make |put )\s*'
+                    r'(?:me )?(?:an? )?\s*',
+                    '', user_input.strip(), count=1, flags=re.IGNORECASE
+                ).strip()
+            # Remove time/date from whatever remains
+            title_clean = re.sub(
+                r'\s*(?:at|for)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\s*', '',
+                title_clean, flags=re.IGNORECASE
+            ).strip()
+            title_clean = re.sub(r'\s*\b(?:today|tomorrow|tonight)\b', '', title_clean, flags=re.IGNORECASE).strip()
+            # Remove trailing "to/on my calendar" or "on my schedule"
+            title_clean = re.sub(r'\s*(?:to|on|in)\s+(?:my |the )?(?:calendar|schedule|gcal)\s*$', '', title_clean, flags=re.IGNORECASE).strip()
+            title_clean = re.sub(r'^(?:for|to|about|on|at)\s+', '', title_clean, flags=re.IGNORECASE).strip()
+
+        # Final fallback: extract event type from the original input
+        if len(title_clean) < 3:
+            type_match = re.search(r'\b(meeting|appointment|reminder|event|session|call|standup|sync)\b', user_input, re.IGNORECASE)
+            if type_match:
+                title_clean = type_match.group(1).capitalize()
+            elif summary and len(summary) < 60:
+                title_clean = summary
+            else:
+                title_clean = "New Event"
 
         # Capitalize first letter
         event_title = title_clean[0].upper() + title_clean[1:] if title_clean else "New Event"
@@ -790,6 +840,9 @@ class AgentOrchestrator:
                 ampm_raw = groups[1] or ''
             # Normalize am/pm (strip dots)
             ampm = ampm_raw.replace('.', '').strip().lower()
+            # If no am/pm specified and hour is 1-6, assume PM (people don't book 2:00 AM events)
+            if not ampm and 1 <= hour <= 6:
+                ampm = 'pm'
             if ampm == 'pm' and hour < 12:
                 hour += 12
             elif ampm == 'am' and hour == 12:
