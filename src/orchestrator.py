@@ -636,6 +636,9 @@ class AgentOrchestrator:
         kw = self.classifier._keyword_classify(user_input)
         category = kw.get("category", "INFORMATION")
 
+        # DEBUG: Print to terminal so we can see what's happening
+        print(f"\n>>> DEBUG CLASSIFIER: input='{user_input[:60]}' → keyword_category={category}")
+
         # Only call Ollama classifier for clear action categories that need intent detail
         ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
         if category in ACTION_CATEGORIES:
@@ -643,6 +646,7 @@ class AgentOrchestrator:
             classification = await self.classifier.classify(user_input)
             category = classification.get("category", category)
             intent = classification.get("intent", "unknown")
+            print(f">>> DEBUG CLASSIFIER: after classify() → final_category={category}, intent={intent}")
             logger.info(f"Intent: category={category}, intent={intent}")
         else:
             classification = kw
