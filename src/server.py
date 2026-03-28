@@ -1,5 +1,19 @@
+import sys
+import shutil
+import importlib
+
+# Auto-clear Python bytecode cache on startup to prevent stale code loading
+_src_dir = os.path.dirname(os.path.abspath(__file__))
+for _root, _dirs, _files in os.walk(_src_dir):
+    if "__pycache__" in _dirs:
+        shutil.rmtree(os.path.join(_root, "__pycache__"), ignore_errors=True)
+        _dirs.remove("__pycache__")
+
+# Force fresh imports (no cached .pyc)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 print("=" * 60)
-print(">>> SERVER LOADING FROM NEW CODE — March 28 fix <<<")
+print(f">>> MEL SERVER — loading from {_src_dir}")
 print("=" * 60)
 """
 AGENT API SERVER v2.0
