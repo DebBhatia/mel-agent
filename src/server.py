@@ -37,10 +37,11 @@ import logging
 import uvicorn
 from dotenv import load_dotenv
 load_dotenv(override=True)
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
 
@@ -48,60 +49,141 @@ from orchestrator import AgentOrchestrator, Config
 
 logger = logging.getLogger("server")
 
+# ── Lifespan (startup / shutdown) ──────────────
+# Defined before app so it can be passed to FastAPI constructor.
+# References `agent` by name — resolved at runtime after module load.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await agent.wake_up()
+    logger.info("✅ Mel auto-woke on startup")
+    yield
+
 app = FastAPI(
     title=f"{Config.AGENT_NAME} - Personal AI Agent",
     description="Private, secure AI agent with code generation, memory, and real-world actions",
     version="2.1.0",
-    docs_url=None,   # Disable Swagger UI in production
+    docs_url=None,    # Disable Swagger UI in production
     redoc_url=None,   # Disable ReDoc in production
+    lifespan=lifespan,
 )
 
 # ── API Key Authentication ─────────────────────
 def _load_or_generate_api_key() -> str:
-    """Load API key from env, or generate and save one on first run."""
+    """Load API key from encrypted vault, then env, or generate on first run."""
+    # 1. Try encrypted vault first
+    try:
+        from security import SecretVault
+        vault = SecretVault()
+        key = vault.get("AGENT_API_KEY", "")
+        if key:
+            logger.info("API key loaded from encrypted vault")
+            return key
+    except Exception as e:
+        logger.warning(f"Could not read from vault: {e}")
+
+    # 2. Fall back to environment variable (legacy / unencrypted)
     key = os.getenv("AGENT_API_KEY", "")
     if key:
         return key
-    # Auto-generate a secure key and write it to .env so user can find it
+
+    # 3. Generate a new key, save to vault
     key = f"mel-{secrets.token_urlsafe(32)}"
-    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
     try:
-        with open(env_path, "a") as f:
-            f.write(f"\n# Auto-generated API key for agent server\nAGENT_API_KEY={key}\n")
-        logger.warning(f"Generated new API key. Saved to .env file. Key: {key}")
-    except OSError:
-        logger.warning(f"Generated API key (could not save to .env): {key}")
+        from security import SecretVault
+        vault = SecretVault()
+        vault.set("AGENT_API_KEY", key)
+        logger.warning(f"Generated new API key and saved to encrypted vault. Key: {key}")
+    except Exception:
+        # Last resort: write to .env only (vault unavailable)
+        env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+        try:
+            with open(env_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# Auto-generated API key\nAGENT_API_KEY={key}\n")
+            logger.warning(f"Generated new API key. Saved to .env. Key: {key}")
+        except OSError:
+            logger.warning(f"Generated API key (could not persist): {key}")
     return key
 
 AGENT_API_KEY = _load_or_generate_api_key()
 
-async def require_api_key(request: Request):
-    """Dependency that enforces API key on protected endpoints."""
-    auth = request.headers.get("Authorization", "")
-    api_key = request.headers.get("X-API-Key", "")
-    query_key = request.query_params.get("api_key", "")
+# ── Session management (HTTP-only cookies for dashboard) ───────────────────
+import time as _time
+_sessions: dict[str, float] = {}   # token → expiry epoch
+_SESSION_TTL = 8 * 3600            # 8 hours
 
+def _create_session() -> str:
+    """Generate a one-time-per-page-load session token for the dashboard."""
+    # Prune expired sessions to prevent unbounded growth
+    now = _time.time()
+    expired = [t for t, exp in list(_sessions.items()) if exp < now]
+    for t in expired:
+        del _sessions[t]
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = now + _SESSION_TTL
+    return token
+
+async def require_api_key(request: Request):
+    """
+    Enforce authentication on protected endpoints.
+    Accepts:
+      • Authorization: Bearer <key>   (programmatic / Raspberry Pi clients)
+      • X-API-Key: <key>              (programmatic / Raspberry Pi clients)
+      • X-Session-Token: <token>      (dashboard — short-lived, injected per page load)
+      • mel_session cookie            (dashboard — HTTP-only, defence-in-depth)
+    Query-parameter auth is intentionally NOT supported (logs keys in plaintext).
+    """
+    auth = request.headers.get("Authorization", "")
+    header_key = request.headers.get("X-API-Key", "")
+
+    # API key via header
     provided_key = ""
     if auth.startswith("Bearer "):
         provided_key = auth[7:]
-    elif api_key:
-        provided_key = api_key
-    elif query_key:
-        provided_key = query_key
+    elif header_key:
+        provided_key = header_key
 
-    if not provided_key or not secrets.compare_digest(provided_key, AGENT_API_KEY):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing API key. Use Authorization: Bearer <key>, X-API-Key header, or ?api_key= param.",
-        )
+    if provided_key and secrets.compare_digest(provided_key, AGENT_API_KEY):
+        return  # ✓ valid API key
+
+    # Session token via header (dashboard JS — explicit, browser-compatible)
+    session_header = request.headers.get("X-Session-Token", "")
+    if session_header and session_header in _sessions:
+        if _sessions[session_header] > _time.time():
+            return  # ✓ valid session token (header)
+        del _sessions[session_header]
+
+    # Session token via cookie (defence-in-depth fallback)
+    cookie_token = request.cookies.get("mel_session", "")
+    if cookie_token and cookie_token in _sessions:
+        if _sessions[cookie_token] > _time.time():
+            return  # ✓ valid session token (cookie)
+        del _sessions[cookie_token]
+
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required. Use Authorization: Bearer <key> or X-API-Key header.",
+    )
 
 
 # ── CORS — restricted to configured origins ────
+# Subnet wildcards (e.g. 192.168.1.0/24) are NOT valid CORS origins and are
+# silently dropped. List individual IPs if cross-LAN access is needed.
+_SAFE_ORIGIN_RE = re.compile(r'^https?://(localhost|127\.0\.0\.1|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$')
+
+def _parse_origins(raw: str) -> list[str]:
+    result = []
+    for o in raw.split(","):
+        o = o.strip()
+        if _SAFE_ORIGIN_RE.match(o):
+            result.append(o)
+        elif o:
+            logger.warning(f"CORS: ignoring unsafe/invalid origin '{o}' (subnet wildcards not allowed)")
+    return result
+
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").strip()
 if ALLOWED_ORIGINS and ALLOWED_ORIGINS != "*":
-    _origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
+    _origins = _parse_origins(ALLOWED_ORIGINS) or ["http://localhost:8000", "http://127.0.0.1:8000"]
 else:
-    # Default: only localhost variants (safe for local Windows usage)
     _origins = [
         "http://localhost:8000",
         "http://localhost:3000",
@@ -114,16 +196,10 @@ app.add_middleware(
     allow_origins=_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Authorization", "X-API-Key", "Content-Type"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type", "X-Session-Token"],
 )
 
 agent = AgentOrchestrator()
-
-# Auto-wake on startup so Mel is always ready
-@app.on_event("startup")
-async def startup_wake():
-    await agent.wake_up()
-    logger.info("✅ Mel auto-woke on startup")
 
 # ── Rate Limiting ──────────────────────────────
 try:
@@ -138,6 +214,8 @@ _RATE_LIMIT_MAP = {
     "/build": "code_gen",
     "/build/iterate": "code_gen",
     "/shell": "shell_exec",
+    "/health": "public_health",
+    "/tts": "tts",
 }
 
 @app.middleware("http")
@@ -155,93 +233,118 @@ async def rate_limit_middleware(request: Request, call_next):
 # ── Dashboard served from server (no CORS issues) ──
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serve the dashboard directly — open http://localhost:8000 in your browser."""
+    """Serve the dashboard with a short-lived session token.
+
+    Security model:
+      • A per-page-load session token (NOT the master API key) is injected
+        into the page as SESSION_TOKEN.  It expires in 8 hours.
+      • The same token is also set as an HTTP-only cookie (belt + suspenders).
+      • The master AGENT_API_KEY never appears in the HTML/JavaScript.
+    """
     dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
     if os.path.exists(dashboard_path):
         with open(dashboard_path, "r", encoding="utf-8") as f:
             content = f.read()
-        # Inject API key so dashboard can authenticate without user input
+        session_token = _create_session()
+        # Inject session token as JS variable — short-lived, NOT the master key
         content = content.replace(
             "const API = window.location.origin;",
-            f"const API = window.location.origin;\nconst API_KEY = '{AGENT_API_KEY}';"
+            f"const API = window.location.origin;\nconst SESSION_TOKEN = '{session_token}';"
         )
-        return HTMLResponse(content=content, headers={
+        html_response = HTMLResponse(content=content, headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
             "Pragma": "no-cache",
         })
+        # Also set as HTTP-only cookie for defence-in-depth
+        html_response.set_cookie(
+            key="mel_session",
+            value=session_token,
+            httponly=True,
+            samesite="strict",
+            max_age=_SESSION_TTL,
+            path="/",
+        )
+        return html_response
     return HTMLResponse(content="<h1>Dashboard not found. Place dashboard.html in the src/ folder.</h1>")
 
 
 # ── Request / Response Models ────────────────
 class TTSRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=2000)
 
 class ProcessRequest(BaseModel):
-    input: str
-    context: dict = {}
+    input: str = Field(..., min_length=1, max_length=5000)
+    context: dict = Field(default_factory=dict)
 
 class ProcessResponse(BaseModel):
     response: str
     timestamp: str = ""
 
 class BuildRequest(BaseModel):
-    prompt: str
-    deploy_target: str = "copy"
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    deploy_target: str = Field(default="copy", max_length=50)
 
 class IterateRequest(BaseModel):
-    project_id: str
-    feedback: str
-    deploy_target: str = "copy"
+    project_id: str = Field(..., min_length=1, max_length=100)
+    feedback: str = Field(..., min_length=1, max_length=4000)
+    deploy_target: str = Field(default="copy", max_length=50)
 
 class KnowledgeStoreRequest(BaseModel):
-    content: str
-    category: str = "general"
-    metadata: dict = {}
+    content: str = Field(..., min_length=1, max_length=10000)
+    category: str = Field(default="general", max_length=100)
+    metadata: dict = Field(default_factory=dict)
 
 class KnowledgeSearchRequest(BaseModel):
-    query: str
-    n_results: int = 5
-    category: Optional[str] = None
+    query: str = Field(..., min_length=1, max_length=1000)
+    n_results: int = Field(default=5, ge=1, le=20)
+    category: Optional[str] = Field(default=None, max_length=100)
 
 class ShellRequest(BaseModel):
-    command: str
-    cwd: Optional[str] = None
+    command: str = Field(..., min_length=1, max_length=500)
+    cwd: Optional[str] = Field(default=None, max_length=260)
+
+    @field_validator("cwd")
+    @classmethod
+    def no_path_traversal(cls, v):
+        if v and ".." in v:
+            raise ValueError("Path traversal not allowed in cwd")
+        return v
 
 class CalendarEventRequest(BaseModel):
-    title: str
-    start_time: str
-    end_time: Optional[str] = None
-    location: Optional[str] = ""
-    description: Optional[str] = ""
-    timezone: Optional[str] = "America/Chicago"
+    title: str = Field(..., min_length=1, max_length=200)
+    start_time: str = Field(..., max_length=50)
+    end_time: Optional[str] = Field(default=None, max_length=50)
+    location: Optional[str] = Field(default="", max_length=300)
+    description: Optional[str] = Field(default="", max_length=2000)
+    timezone: Optional[str] = Field(default="America/Chicago", max_length=50)
 
 
 class ReminderRequest(BaseModel):
-    title: str
-    trigger_time: Optional[str] = None
-    minutes: Optional[int] = None
-    hours: Optional[int] = None
-    days: Optional[int] = None
-    recurrence: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    trigger_time: Optional[str] = Field(default=None, max_length=50)
+    minutes: Optional[int] = Field(default=None, ge=0, le=10080)   # max 1 week
+    hours: Optional[int] = Field(default=None, ge=0, le=168)
+    days: Optional[int] = Field(default=None, ge=0, le=365)
+    recurrence: Optional[str] = Field(default=None, max_length=50)
 
 
 class SmartHomeCommandRequest(BaseModel):
-    action: str  # turn_on, turn_off, set_temperature, lock, unlock, brightness, scene, status
-    device: Optional[str] = ""
-    value: Optional[str] = ""
+    action: str = Field(..., min_length=1, max_length=50)
+    device: Optional[str] = Field(default="", max_length=100)
+    value: Optional[str] = Field(default="", max_length=100)
 
 
 class NotificationRequest(BaseModel):
-    title: str = "Mel Agent"
-    message: str
-    priority: str = "normal"
-    backend: Optional[str] = None
+    title: str = Field(default="Mel Agent", max_length=100)
+    message: str = Field(..., min_length=1, max_length=1000)
+    priority: str = Field(default="normal", max_length=20)
+    backend: Optional[str] = Field(default=None, max_length=50)
 
 
 class RoutineCreateRequest(BaseModel):
-    name: str
-    description: str = ""
-    steps: list = []
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    steps: list = Field(default_factory=list)
 
 
 # ── Core ─────────────────────────────────────
@@ -293,11 +396,25 @@ async def text_to_speech(request: TTSRequest):
     if len(text) > 2000:
         text = text[:2000]
 
-    api_key = os.getenv("ELEVENLABS_API_KEY", "")
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
+    try:
+        from security import SecretVault
+        _vault = SecretVault()
+        api_key = _vault.get("ELEVENLABS_API_KEY") or os.getenv("ELEVENLABS_API_KEY", "")
+        voice_id = _vault.get("ELEVENLABS_VOICE_ID") or os.getenv("ELEVENLABS_VOICE_ID", "eXpIbVcVbLo8ZJQDlDnl")
+    except Exception:
+        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "eXpIbVcVbLo8ZJQDlDnl")
 
     if not api_key:
         raise HTTPException(status_code=503, detail="ElevenLabs not configured")
+
+    # Strip markdown so it doesn't get read aloud ("asterisk asterisk bold asterisk asterisk")
+    import re as _re
+    text = _re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)   # bold/italic
+    text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)         # inline code / code blocks
+    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)  # headers
+    text = _re.sub(r'^\s*[-*•]\s+', '', text, flags=_re.MULTILINE)  # bullet points
+    text = _re.sub(r'\n{3,}', '\n\n', text).strip()
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -306,8 +423,13 @@ async def text_to_speech(request: TTSRequest):
                 headers={"xi-api-key": api_key, "Content-Type": "application/json"},
                 json={
                     "text": text,
-                    "model_id": "eleven_turbo_v2_5",
-                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.85, "style": 0.2, "use_speaker_boost": True}
+                    "model_id": "eleven_flash_v2_5",  # newest model — most natural, lowest latency
+                    "voice_settings": {
+                        "stability": 0.40,          # balanced: not flat, not erratic
+                        "similarity_boost": 0.85,   # strong character presence
+                        "style": 0.65,              # expressive & warm — sounds happy/engaged
+                        "use_speaker_boost": True   # sharper, more present sound
+                    }
                 },
             )
             if resp.status_code == 200:
@@ -316,10 +438,15 @@ async def text_to_speech(request: TTSRequest):
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="TTS request timed out")
 
-@app.get("/tts/config")
+@app.get("/tts/config", dependencies=[Depends(require_api_key)])
 async def tts_config():
     """Tell the dashboard whether ElevenLabs is configured."""
-    return {"elevenlabs": bool(os.getenv("ELEVENLABS_API_KEY", ""))}
+    try:
+        from security import SecretVault
+        key = SecretVault().get("ELEVENLABS_API_KEY") or os.getenv("ELEVENLABS_API_KEY", "")
+    except Exception:
+        key = os.getenv("ELEVENLABS_API_KEY", "")
+    return {"elevenlabs": bool(key)}
 
 
 # ── Code Generation ──────────────────────────
@@ -731,7 +858,7 @@ async def notification_history():
 
 
 # ── Enhanced health check with new services ──
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(require_api_key)])
 async def health_check_v2():
     """Health check — includes all service statuses for dashboard."""
     ollama_ok = await agent.ollama.is_available()

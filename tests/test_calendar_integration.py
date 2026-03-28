@@ -281,8 +281,10 @@ class TestCalendarAPICall:
         assert captured_body["reminders"]["useDefault"] is False
 
     @pytest.mark.asyncio
+    @patch.dict(os.environ, {}, clear=False)
     async def test_calendar_id_is_primary(self):
         """Verify events are created on the primary calendar."""
+        os.environ.pop("GOOGLE_CALENDAR_ID", None)
         cal = CalendarPlugin()
         mock_service = MagicMock()
         captured_cal_id = {}
@@ -359,7 +361,9 @@ class TestCalendarAuthModes:
         )
         assert "service account" in result.lower()
 
+    @patch.dict(os.environ, {}, clear=False)
     def test_calendar_id_defaults_to_primary(self):
+        os.environ.pop("GOOGLE_CALENDAR_ID", None)
         cal = CalendarPlugin()
         assert cal._get_calendar_id() == "primary"
 
