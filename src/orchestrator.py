@@ -316,6 +316,38 @@ class OllamaClient:
             logger.error(f"Ollama error: {e}")
             return "Local model temporarily unavailable. Is Ollama running?"
 
+    async def chat_stream(self, message: str, system_prompt: str = None):
+        """Stream tokens from Ollama. Yields text chunks as they arrive."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(self.conversation_history[-10:])
+        messages.append({"role": "user", "content": message})
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/chat",
+                    json={"model": self.model, "messages": messages, "stream": True},
+                ) as response:
+                    full_response = ""
+                    async for line in response.aiter_lines():
+                        if line:
+                            chunk = json.loads(line)
+                            token = chunk.get("message", {}).get("content", "")
+                            if token:
+                                full_response += token
+                                yield token
+                    # Update history after stream completes
+                    self.conversation_history.append({"role": "user", "content": message})
+                    self.conversation_history.append({"role": "assistant", "content": full_response})
+                    if len(self.conversation_history) > 30:
+                        self.conversation_history = self.conversation_history[-20:]
+        except Exception as e:
+            logger.error(f"Ollama stream error: {e}")
+            yield "Local model temporarily unavailable. Is Ollama running?"
+
     async def is_available(self) -> bool:
         """Check if Ollama is running."""
         try:
@@ -336,6 +368,7 @@ class ClaudeClient:
         self.api_key = Config.ANTHROPIC_API_KEY
         self.model = Config.CLAUDE_MODEL
         self.sanitizer = PIISanitizer()
+        self.conversation_history = []  # Multi-turn memory for Claude
         # Initialize audit logger
         try:
             from security import AuditLogger, EnhancedPIISanitizer
@@ -373,11 +406,8 @@ class ClaudeClient:
             f"\nExample of GOOD response: 'Yeah totally fine — cocktail peanuts and beer are a classic combo. Just watch the sodium if you're having a bunch, but one serving won't hurt you.'"
         )
 
-    async def converse(self, user_message: str, extra_context: str = "") -> str:
-        """Conversational response as Mel — the primary chat method."""
-        if not self.api_key:
-            return "Claude API key not configured."
-
+    def _prepare_converse(self, user_message: str, extra_context: str = ""):
+        """Shared prep for converse/converse_stream: sanitize input, build payload."""
         safe_msg = self.sanitizer.sanitize(user_message)
         if self.enhanced_sanitizer:
             safe_msg = self.enhanced_sanitizer.sanitize(safe_msg)
@@ -393,6 +423,10 @@ class ClaudeClient:
         if extra_context:
             content = f"{extra_context}\n\n{safe_msg}"
 
+        # Build messages with conversation history for multi-turn context
+        messages = list(self.conversation_history[-10:])
+        messages.append({"role": "user", "content": content})
+
         headers = {
             "x-api-key": self.api_key,
             "content-type": "application/json",
@@ -402,8 +436,23 @@ class ClaudeClient:
             "model": self.model,
             "max_tokens": 1024,
             "system": self._mel_system_prompt(),
-            "messages": [{"role": "user", "content": content}],
+            "messages": messages,
         }
+        return content, headers, payload
+
+    def _update_converse_history(self, content: str, response_text: str):
+        """Append a turn to conversation history (stores sanitized text only)."""
+        self.conversation_history.append({"role": "user", "content": content})
+        self.conversation_history.append({"role": "assistant", "content": response_text})
+        if len(self.conversation_history) > 30:
+            self.conversation_history = self.conversation_history[-20:]
+
+    async def converse(self, user_message: str, extra_context: str = "") -> str:
+        """Conversational response as Mel — the primary chat method."""
+        if not self.api_key:
+            return "Claude API key not configured."
+
+        content, headers, payload = self._prepare_converse(user_message, extra_context)
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -414,10 +463,46 @@ class ClaudeClient:
                 )
                 result = response.json()
                 raw_response = result["content"][0]["text"]
+                self._update_converse_history(content, raw_response)
                 return self.sanitizer.desanitize(raw_response)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             return "I'm having trouble reaching my cloud brain right now. Try again in a moment."
+
+    async def converse_stream(self, user_message: str, extra_context: str = ""):
+        """Stream tokens from Claude API. Yields text chunks as they arrive."""
+        if not self.api_key:
+            yield "Claude API key not configured."
+            return
+
+        content, headers, payload = self._prepare_converse(user_message, extra_context)
+        payload["stream"] = True
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    full_response = ""
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            try:
+                                data = json.loads(line[6:])
+                                if data.get("type") == "content_block_delta":
+                                    text = data.get("delta", {}).get("text", "")
+                                    if text:
+                                        full_response += text
+                                        yield text
+                            except json.JSONDecodeError:
+                                continue
+                    # Update history after stream completes (sanitized text only)
+                    self._update_converse_history(content, full_response)
+        except Exception as e:
+            logger.error(f"Claude stream error: {e}")
+            yield "I'm having trouble reaching my cloud brain right now. Try again in a moment."
 
     async def reason(self, task_description: str, context: str = "") -> str:
         """Send sanitized request to Claude for complex reasoning / planning."""
@@ -778,6 +863,86 @@ class AgentOrchestrator:
                 pass  # Don't let KB errors break the main flow
 
         return response
+
+    async def process_stream(self, user_input: str):
+        """Streaming variant of process(). Yields tokens for SSE delivery.
+        For action categories (instant results), yields the full response at once.
+        For Claude/Ollama-backed categories, streams token-by-token.
+        """
+        # Normalize apostrophes
+        _inp = user_input.lower().replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
+        _stripped = _inp.strip()
+
+        # Quick responses — yield full result at once
+        if _stripped in ("mel", "mel?", "mel!") or _stripped.startswith("mel:") or _stripped.startswith("mel,"):
+            yield f"Yes, {Config.USER_NAME}?"
+            return
+
+        _wake_variants = [
+            Config.WAKE_PHRASE.lower(), "wake up daddy's home", "wake up daddys home",
+            "daddy's home", "daddy is home", "daddys home",
+        ]
+        if any(v in _inp for v in _wake_variants):
+            yield await self.wake_up()
+            return
+
+        if any(cmd in _inp for cmd in ["go to sleep", "sleep mode", "shut down"]):
+            yield await self.sleep()
+            return
+
+        if not self.is_awake:
+            yield f"I'm sleeping right now, {Config.USER_NAME}. Say 'wake up daddy is home' or press the WAKE MEL button to wake me up."
+            return
+
+        if self.pending_calendar_action:
+            yield await self._handle_calendar(user_input, {})
+            return
+
+        # Classify intent
+        kw = self.classifier._keyword_classify(user_input)
+        category = kw.get("category", "INFORMATION")
+
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        if category in ACTION_CATEGORIES:
+            classification = await self.classifier.classify(user_input)
+            category = classification.get("category", category)
+        else:
+            classification = kw
+
+        # Time/date — instant answer
+        if any(kw_t in _inp for kw_t in ("what time is it", "what's the time", "what is the time",
+                                          "current time", "what day is it", "today's date",
+                                          "what date is it", "what is today", "current date")):
+            try:
+                import pytz
+                tz = pytz.timezone(Config.TIMEZONE)
+                now = datetime.now(tz)
+            except Exception:
+                now = datetime.now()
+            day_str = now.strftime("%A, %B %d, %Y")
+            time_str = now.strftime("%I:%M %p").lstrip("0")
+            yield f"It's {time_str} on {day_str}, {Config.USER_NAME}."
+            return
+
+        # Action categories — instant results, yield full response
+        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        if category in INSTANT_CATEGORIES:
+            response = await self.process(user_input)
+            yield response
+            return
+
+        # Claude-backed categories — stream token-by-token
+        full_response = ""
+        async for token in self.claude.converse_stream(user_input):
+            full_response += token
+            yield token
+
+        # Store conversation in knowledge base
+        if self.knowledge and full_response:
+            try:
+                self.knowledge.store_conversation(user_input, full_response[:500])
+            except Exception:
+                pass
 
     # ─────────────────────────────────────────────
     # CALENDAR Handler - Book appointments & events
