@@ -72,10 +72,19 @@ if [ "$1" = "--service-account" ]; then
         exit 1
     fi
 
+    # Convert Git Bash path (e.g. /c/Users/...) to Windows path for Python
+    if command -v cygpath &>/dev/null; then
+        PY_PATH=$(cygpath -w "$2")
+        PY_SA_FILE=$(cygpath -w "$SA_FILE")
+    else
+        PY_PATH="$2"
+        PY_SA_FILE="$SA_FILE"
+    fi
+
     # Validate it's a service account JSON
     python3 -c "
 import json, sys
-data = json.load(open('$2'))
+data = json.load(open(r'$PY_PATH'))
 if 'client_email' not in data or 'private_key' not in data:
     print('Error: This does not look like a service account key file.')
     print('Expected fields: client_email, private_key')
@@ -86,7 +95,7 @@ print(f\"Service account: {data['client_email']}\")
     cp "$2" "$SA_FILE"
     chmod 600 "$SA_FILE"
 
-    SA_EMAIL=$(python3 -c "import json; print(json.load(open('$SA_FILE'))['client_email'])")
+    SA_EMAIL=$(python3 -c "import json; print(json.load(open(r'$PY_SA_FILE'))['client_email'])")
 
     echo ""
     echo "✅ Service account key installed to $SA_FILE"

@@ -337,7 +337,9 @@ class EnhancedPIISanitizer:
         self.custom_mappings = {}
         if os.path.exists(self.mappings_path):
             with open(self.mappings_path) as f:
-                self.custom_mappings = json.load(f)
+                raw = json.load(f)
+            # Filter out non-string values (e.g. encrypted stub: _encrypted: true)
+            self.custom_mappings = {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
     def sanitize(self, text: str) -> str:
         """Full PII sanitization: custom mappings + regex patterns."""

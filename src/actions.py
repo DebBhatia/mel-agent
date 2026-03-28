@@ -135,11 +135,11 @@ class CalendarPlugin:
             "description": params.get("description", "Created by AI Agent"),
             "start": {
                 "dateTime": params.get("start_time"),
-                "timeZone": params.get("timezone", "America/Chicago"),
+                "timeZone": params.get("timezone", "America/Indiana/Indianapolis"),
             },
             "end": {
                 "dateTime": params.get("end_time"),
-                "timeZone": params.get("timezone", "America/Chicago"),
+                "timeZone": params.get("timezone", "America/Indiana/Indianapolis"),
             },
             "reminders": {
                 "useDefault": False,
@@ -157,7 +157,9 @@ class CalendarPlugin:
             from datetime import datetime
             try:
                 start_dt = datetime.fromisoformat(params.get("start_time", ""))
-                friendly_time = start_dt.strftime("%-I:%M %p on %B %-d, %Y")
+                # %-I and %-d are Linux-only; use int() to strip zero-padding cross-platform
+                hour_str = str(int(start_dt.strftime('%I')))
+                friendly_time = f"{hour_str}:{start_dt.strftime('%M %p')} on {start_dt.strftime('%B')} {start_dt.day}, {start_dt.year}"
             except (ValueError, TypeError):
                 friendly_time = params.get("start_time", "")
             return f"Done! I've added \"{result.get('summary')}\" to your calendar at {friendly_time}."
@@ -189,10 +191,16 @@ class CalendarPlugin:
             if not events:
                 return f"No events in the next {days_ahead} days."
 
+            from datetime import datetime as _dt
             summary = []
             for event in events:
-                start = event["start"].get("dateTime", event["start"].get("date"))
-                summary.append(f"- {event['summary']} at {start}")
+                raw = event["start"].get("dateTime", event["start"].get("date", ""))
+                try:
+                    st = _dt.fromisoformat(raw.replace("Z", "+00:00"))
+                    time_label = f"{str(int(st.strftime('%I')))}:{st.strftime('%M %p')} on {st.strftime('%b')} {st.day}"
+                except Exception:
+                    time_label = raw
+                summary.append(f"- {event['summary']} at {time_label}")
 
             return f"Upcoming events ({days_ahead} days):\n" + "\n".join(summary)
         except Exception as e:
@@ -224,6 +232,153 @@ class CalendarPlugin:
                 return f"Conflict found: {', '.join(conflicts)}"
         except Exception as e:
             return f"Failed to check availability: {e}"
+
+    async def get_events_for_date(self, params: dict) -> str:
+        """Get events for a specific date. params: date (YYYY-MM-DD)."""
+        if not self.service:
+            self.authenticate()
+            if not self.service:
+                return "Calendar not connected."
+
+        from datetime import datetime as dt_cls, timedelta
+        date_str = params.get("date")
+        try:
+            day = dt_cls.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            day = dt_cls.utcnow()
+
+        time_min = day.replace(hour=0, minute=0, second=0).isoformat() + "Z"
+        time_max = (day.replace(hour=0, minute=0, second=0) + timedelta(days=1)).isoformat() + "Z"
+
+        try:
+            result = self.service.events().list(
+                calendarId=self._get_calendar_id(),
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            events = result.get("items", [])
+            day_label = day.strftime("%A, %B %d")
+            if not events:
+                return f"Nothing on your calendar for {day_label} — you're free all day."
+            lines = []
+            for e in events:
+                start = e["start"].get("dateTime", e["start"].get("date", ""))
+                try:
+                    st = dt_cls.fromisoformat(start.replace("Z", "+00:00"))
+                    time_label = f"{str(int(st.strftime('%I')))}:{st.strftime('%M %p')}"
+                except Exception:
+                    time_label = start
+                lines.append(f"- {e.get('summary', 'Untitled')} at {time_label}")
+            return f"Here's what you've got on {day_label}:\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Failed to get events: {e}"
+
+    async def find_events_by_query(self, params: dict) -> list:
+        """Search events by keyword and/or date range. Returns raw list of event dicts with IDs."""
+        if not self.service:
+            self.authenticate()
+            if not self.service:
+                return []
+
+        from datetime import datetime as dt_cls, timedelta
+        query = params.get("query", "")
+        date_str = params.get("date")  # optional specific date YYYY-MM-DD
+        days = params.get("days", 30)
+
+        now = dt_cls.utcnow()
+        if date_str:
+            try:
+                anchor = dt_cls.strptime(date_str, "%Y-%m-%d")
+                time_min = anchor.replace(hour=0, minute=0, second=0).isoformat() + "Z"
+                time_max = (anchor.replace(hour=0, minute=0, second=0) + timedelta(days=1)).isoformat() + "Z"
+            except Exception:
+                time_min = now.isoformat() + "Z"
+                time_max = (now + timedelta(days=days)).isoformat() + "Z"
+        else:
+            # Search 60 days past and future for edits/deletes
+            time_min = (now - timedelta(days=7)).isoformat() + "Z"
+            time_max = (now + timedelta(days=days)).isoformat() + "Z"
+
+        try:
+            kwargs = dict(
+                calendarId=self._get_calendar_id(),
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=20,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            if query:
+                kwargs["q"] = query
+            result = self.service.events().list(**kwargs).execute()
+            return result.get("items", [])
+        except Exception as e:
+            logger.error(f"find_events_by_query failed: {e}")
+            return []
+
+    async def delete_event(self, params: dict) -> str:
+        """Delete a calendar event by ID."""
+        if not self.service:
+            self.authenticate()
+            if not self.service:
+                return "Calendar not connected."
+
+        event_id = params.get("event_id")
+        if not event_id:
+            return "No event ID provided."
+        try:
+            self.service.events().delete(
+                calendarId=self._get_calendar_id(),
+                eventId=event_id,
+            ).execute()
+            title = params.get("title", "that event")
+            return f"Done — \"{title}\" has been removed from your calendar."
+        except Exception as e:
+            return f"Failed to delete event: {e}"
+
+    async def update_event(self, params: dict) -> str:
+        """Update an existing calendar event by ID (patch — only fields provided are changed)."""
+        if not self.service:
+            self.authenticate()
+            if not self.service:
+                return "Calendar not connected."
+
+        event_id = params.get("event_id")
+        if not event_id:
+            return "No event ID provided."
+
+        body = {}
+        if "title" in params:
+            body["summary"] = params["title"]
+        if "start_time" in params:
+            body["start"] = {"dateTime": params["start_time"], "timeZone": params.get("timezone", "America/Chicago")}
+        if "end_time" in params:
+            body["end"] = {"dateTime": params["end_time"], "timeZone": params.get("timezone", "America/Chicago")}
+        if "location" in params:
+            body["location"] = params["location"]
+        if "description" in params:
+            body["description"] = params["description"]
+
+        try:
+            result = self.service.events().patch(
+                calendarId=self._get_calendar_id(),
+                eventId=event_id,
+                body=body,
+            ).execute()
+            from datetime import datetime
+            new_start = result.get("start", {}).get("dateTime", "")
+            try:
+                st = datetime.fromisoformat(new_start)
+                hour_str = str(int(st.strftime('%I')))
+                time_label = f"{hour_str}:{st.strftime('%M %p')} on {st.strftime('%B')} {st.day}, {st.year}"
+            except Exception:
+                time_label = new_start
+            title = result.get("summary", params.get("title", "event"))
+            return f"Updated — \"{title}\" is now set for {time_label}."
+        except Exception as e:
+            return f"Failed to update event: {e}"
 
 
 # ─────────────────────────────────────────────
@@ -349,9 +504,13 @@ def register_all_plugins(action_registry):
     reservation = ReservationPlugin()
     communication = CommunicationPlugin()
 
-    action_registry.register("calendar_create", calendar.create_event, "Create calendar event")
-    action_registry.register("calendar_list", calendar.get_events, "List upcoming events")
-    action_registry.register("calendar_check", calendar.check_availability, "Check availability")
+    action_registry.register("calendar_create",    calendar.create_event,        "Create calendar event")
+    action_registry.register("calendar_list",      calendar.get_events,          "List upcoming events")
+    action_registry.register("calendar_check",     calendar.check_availability,  "Check time slot availability")
+    action_registry.register("calendar_day",       calendar.get_events_for_date, "Get events for a specific date")
+    action_registry.register("calendar_find",      calendar.find_events_by_query,"Search events by keyword/date")
+    action_registry.register("calendar_delete",    calendar.delete_event,        "Delete a calendar event by ID")
+    action_registry.register("calendar_update",    calendar.update_event,        "Update a calendar event by ID")
     action_registry.register("restaurant_search", reservation.search_restaurants, "Search restaurants")
     action_registry.register("restaurant_call", reservation.make_reservation_call, "Call to book")
     action_registry.register("send_sms", communication.send_sms, "Send SMS")
