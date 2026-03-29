@@ -175,7 +175,7 @@ User request: """
                         except json.JSONDecodeError:
                             pass
 
-                valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION",
+                valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION", "EMAIL",
                                     "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION",
                                     "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE"]
                 if parsed and isinstance(parsed, dict) and parsed.get("category", "").upper() in valid_categories:
@@ -264,6 +264,12 @@ User request: """
             return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["book", "reservation", "table", "hotel", "reserve"]):
             return {"category": "RESERVATION", "intent": "book", "requires_cloud": True, "summary": summary}
+        elif any(kw in text for kw in ["check my email", "read my email", "check email", "read email",
+                                        "my inbox", "check inbox", "new emails", "unread email",
+                                        "search email", "search my email", "find email",
+                                        "draft email", "draft an email", "compose email",
+                                        "check my gmail", "read my gmail", "gmail"]):
+            return {"category": "EMAIL", "intent": "read", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["send", "text", "email", "message", "call"]):
             return {"category": "COMMUNICATION", "intent": "send", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["light", "lock", "thermostat", "temperature", "turn on", "turn off",
@@ -791,7 +797,7 @@ class AgentOrchestrator:
 
 
         # Only call Ollama classifier for clear action categories that need intent detail
-        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "EMAIL", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
         if category in ACTION_CATEGORIES:
             logger.info(f"Classifying user input ({len(user_input)} chars)...")
             classification = await self.classifier.classify(user_input)
@@ -846,6 +852,9 @@ class AgentOrchestrator:
 
         elif category == "NOTIFICATION":
             response = await self._handle_notification(user_input, classification)
+
+        elif category == "EMAIL":
+            response = await self._handle_email(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
             response = await self.claude.converse(user_input)
@@ -902,7 +911,7 @@ class AgentOrchestrator:
         kw = self.classifier._keyword_classify(user_input)
         category = kw.get("category", "INFORMATION")
 
-        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        ACTION_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "RESERVATION", "COMMUNICATION", "EMAIL", "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION"}
         if category in ACTION_CATEGORIES:
             classification = await self.classifier.classify(user_input)
             category = classification.get("category", category)
@@ -925,7 +934,7 @@ class AgentOrchestrator:
             return
 
         # Action categories — instant results, yield full response
-        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "EMAIL", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION"}
         if category in INSTANT_CATEGORIES:
             response = await self.process(user_input)
             yield response
@@ -1792,6 +1801,40 @@ Request: {summary}"""
             backends = ", ".join(result["backends"].keys())
             return f"Notification sent via {backends}."
         return "Failed to send notification. Check your configuration."
+
+    async def _handle_email(self, user_input: str, classification: dict) -> str:
+        """Handle Gmail read/search/draft requests."""
+        import re
+        _inp = user_input.lower()
+
+        # Draft / compose
+        if any(kw in _inp for kw in ["draft", "compose", "write an email", "write email"]):
+            # Try to extract to/subject/body from input via Claude
+            context = (
+                "The user wants to draft an email. Extract: to (email address), subject, body. "
+                "If the user didn't specify a recipient, set to as empty. "
+                "Return ONLY a JSON object: {\"to\": \"\", \"subject\": \"\", \"body\": \"\"}"
+            )
+            try:
+                result = await self.claude.reason(user_input, context)
+                import json
+                params = json.loads(result)
+                return await self.actions.execute("gmail_draft", params)
+            except Exception:
+                return await self.actions.execute("gmail_draft", {
+                    "to": "", "subject": user_input, "body": ""
+                })
+
+        # Search
+        if any(kw in _inp for kw in ["search", "find email", "look for email", "find my email"]):
+            query_match = re.search(r'(?:search|find|look for)\s+(?:emails?\s+)?(?:about\s+|from\s+|for\s+)?(.+)', _inp)
+            query = query_match.group(1).strip() if query_match else user_input
+            return await self.actions.execute("gmail_search", {"query": query, "count": 5})
+
+        # Default: read inbox
+        count_match = re.search(r'(\d+)\s+(?:email|message)', _inp)
+        count = int(count_match.group(1)) if count_match else 5
+        return await self.actions.execute("gmail_inbox", {"count": count})
 
     @staticmethod
     def _extract_device_name(text: str) -> str:

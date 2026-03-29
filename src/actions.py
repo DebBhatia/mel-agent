@@ -496,6 +496,177 @@ class CommunicationPlugin:
 
 
 # ─────────────────────────────────────────────
+# Gmail Plugin (Read / Search / Draft)
+# ─────────────────────────────────────────────
+class GmailPlugin:
+    """
+    Read, search, and draft Gmail messages via the Gmail API.
+
+    Reuses the same Google OAuth credentials as CalendarPlugin.
+    Requires the Gmail readonly + compose scopes on first OAuth consent.
+    Service account auth requires domain-wide delegation for Gmail.
+    """
+
+    SCOPES = [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+    ]
+
+    def __init__(self):
+        self.credentials_path = os.getenv(
+            "GOOGLE_CREDENTIALS_PATH",
+            os.path.expanduser("~/.config/agent/google_credentials.json")
+        )
+        self.token_path = os.getenv(
+            "GOOGLE_GMAIL_TOKEN_PATH",
+            os.path.expanduser("~/.config/agent/google_gmail_token.json")
+        )
+        self.user_email = os.getenv("GMAIL_USER_EMAIL", "me")
+        self.service = None
+
+    def authenticate(self):
+        """Authenticate with Gmail API via OAuth2."""
+        try:
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
+
+            creds = None
+            if os.path.exists(self.token_path):
+                creds = Credentials.from_authorized_user_file(self.token_path, self.SCOPES)
+
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                elif os.path.exists(self.credentials_path):
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_path, self.SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+                else:
+                    logger.warning("Gmail: No credentials file found")
+                    return
+
+                with open(self.token_path, "w") as f:
+                    f.write(creds.to_json())
+
+            self.service = build("gmail", "v1", credentials=creds)
+            logger.info("Gmail authenticated via OAuth2")
+        except Exception as e:
+            logger.warning(f"Gmail auth failed: {e}")
+
+    def is_configured(self) -> bool:
+        return self.service is not None
+
+    async def read_inbox(self, params: dict) -> str:
+        """Read recent emails from inbox. params: {count: int}"""
+        if not self.service:
+            self.authenticate()
+        if not self.service:
+            return "Gmail not configured. Run scripts/setup-google-calendar.sh with Gmail scopes."
+
+        count = int(params.get("count", 5))
+        try:
+            results = self.service.users().messages().list(
+                userId=self.user_email, labelIds=["INBOX"], maxResults=count
+            ).execute()
+            messages = results.get("messages", [])
+            if not messages:
+                return "Your inbox is empty."
+
+            summaries = []
+            for msg_meta in messages:
+                msg = self.service.users().messages().get(
+                    userId=self.user_email, id=msg_meta["id"], format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"]
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                snippet = msg.get("snippet", "")[:120]
+                summaries.append(
+                    f"From: {headers.get('From', 'Unknown')}\n"
+                    f"Subject: {headers.get('Subject', '(no subject)')}\n"
+                    f"Date: {headers.get('Date', '')}\n"
+                    f"Preview: {snippet}"
+                )
+            return "\n\n---\n\n".join(summaries)
+        except Exception as e:
+            logger.error(f"Gmail read error: {e}")
+            return f"Failed to read inbox: {e}"
+
+    async def search_emails(self, params: dict) -> str:
+        """Search emails by query. params: {query: str, count: int}"""
+        if not self.service:
+            self.authenticate()
+        if not self.service:
+            return "Gmail not configured."
+
+        query = params.get("query", "")
+        count = int(params.get("count", 5))
+        if not query:
+            return "No search query provided."
+
+        try:
+            results = self.service.users().messages().list(
+                userId=self.user_email, q=query, maxResults=count
+            ).execute()
+            messages = results.get("messages", [])
+            if not messages:
+                return f"No emails found matching '{query}'."
+
+            summaries = []
+            for msg_meta in messages:
+                msg = self.service.users().messages().get(
+                    userId=self.user_email, id=msg_meta["id"], format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"]
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                snippet = msg.get("snippet", "")[:120]
+                summaries.append(
+                    f"From: {headers.get('From', 'Unknown')}\n"
+                    f"Subject: {headers.get('Subject', '(no subject)')}\n"
+                    f"Date: {headers.get('Date', '')}\n"
+                    f"Preview: {snippet}"
+                )
+            return "\n\n---\n\n".join(summaries)
+        except Exception as e:
+            logger.error(f"Gmail search error: {e}")
+            return f"Failed to search emails: {e}"
+
+    async def create_draft(self, params: dict) -> str:
+        """Create an email draft. params: {to: str, subject: str, body: str}"""
+        if not self.service:
+            self.authenticate()
+        if not self.service:
+            return "Gmail not configured."
+
+        to = params.get("to", "")
+        subject = params.get("subject", "")
+        body = params.get("body", "")
+
+        if not to:
+            return "No recipient specified."
+
+        import base64
+        from email.mime.text import MIMEText as _MIMEText
+
+        message = _MIMEText(body)
+        message["to"] = to
+        message["subject"] = subject
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+        try:
+            draft = self.service.users().drafts().create(
+                userId=self.user_email,
+                body={"message": {"raw": raw}}
+            ).execute()
+            return f"Draft created (ID: {draft['id']}). Open Gmail to review and send."
+        except Exception as e:
+            logger.error(f"Gmail draft error: {e}")
+            return f"Failed to create draft: {e}"
+
+
+# ─────────────────────────────────────────────
 # Plugin Registry Helper
 # ─────────────────────────────────────────────
 def register_all_plugins(action_registry):
@@ -515,5 +686,11 @@ def register_all_plugins(action_registry):
     action_registry.register("restaurant_call", reservation.make_reservation_call, "Call to book")
     action_registry.register("send_sms", communication.send_sms, "Send SMS")
     action_registry.register("send_email", communication.send_email, "Send email")
+
+    # Gmail (read/search/draft)
+    gmail = GmailPlugin()
+    action_registry.register("gmail_inbox", gmail.read_inbox, "Read recent emails")
+    action_registry.register("gmail_search", gmail.search_emails, "Search emails")
+    action_registry.register("gmail_draft", gmail.create_draft, "Create email draft")
 
     logger.info(f"Registered {len(action_registry.actions)} action plugins")

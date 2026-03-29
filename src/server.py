@@ -89,12 +89,13 @@ async def lifespan(app: FastAPI):
     # Launch background tasks
     _asyncio.create_task(_scheduler_loop())
     _asyncio.create_task(_health_broadcast_loop())
-    logger.info("✅ Background tasks started (scheduler, health broadcast)")
+    _asyncio.create_task(_calendar_alert_loop())
+    logger.info("✅ Background tasks started (scheduler, health broadcast, calendar alerts)")
     yield
 
 
 async def _scheduler_loop():
-    """Check reminders every 15 seconds and push via WebSocket."""
+    """Check reminders every 15 seconds and push via WebSocket + phone notifications."""
     while True:
         try:
             if agent.scheduler:
@@ -106,6 +107,12 @@ async def _scheduler_loop():
                         title = reminder.title if hasattr(reminder, 'title') else str(reminder)
                         rid = reminder.id if hasattr(reminder, 'id') else ''
                         await ws_manager.broadcast("reminder", {"title": title, "id": rid})
+                        # Send push notification to phone
+                        if agent.notifications:
+                            try:
+                                await agent.notifications.send_reminder_notification(title)
+                            except Exception as e:
+                                logger.error(f"Reminder notification failed: {e}")
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")
         await _asyncio.sleep(15)
@@ -124,6 +131,74 @@ async def _health_broadcast_loop():
         except Exception:
             pass
         await _asyncio.sleep(30)
+
+
+# Track which events we've already alerted for (prevent duplicate alerts)
+_alerted_events: set = set()
+
+
+async def _calendar_alert_loop():
+    """Check upcoming calendar events every 5 minutes. Alert 30 min before."""
+    await _asyncio.sleep(30)  # Wait for services to initialize
+    while True:
+        try:
+            # Only run if calendar actions are registered and agent has actions
+            if agent.actions and "calendar_list" in agent.actions.actions:
+                from datetime import timedelta
+                result = await agent.actions.execute("calendar_list", {"count": 10})
+                if result and not result.startswith(("No upcoming", "Calendar not", "Failed")):
+                    # Parse events from result text
+                    import re
+                    now = datetime.now()
+                    alert_window_start = now + timedelta(minutes=25)
+                    alert_window_end = now + timedelta(minutes=35)
+
+                    # Try to extract event times and titles
+                    for line in result.split("\n"):
+                        # Look for time patterns like "10:30 AM" or ISO timestamps
+                        time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))', line)
+                        if time_match:
+                            try:
+                                event_time_str = time_match.group(1).strip().upper()
+                                event_time = datetime.strptime(
+                                    f"{now.strftime('%Y-%m-%d')} {event_time_str}",
+                                    "%Y-%m-%d %I:%M %p"
+                                )
+                                # Check if event is within 25-35 min from now
+                                if alert_window_start <= event_time <= alert_window_end:
+                                    # Extract title (text before or after the time)
+                                    title = re.sub(r'\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)', '', line).strip()
+                                    title = re.sub(r'^[\s\-•|:]+|[\s\-•|:]+$', '', title)
+                                    event_key = f"{now.strftime('%Y-%m-%d')}_{event_time_str}_{title[:30]}"
+                                    if event_key not in _alerted_events and title:
+                                        _alerted_events.add(event_key)
+                                        mins_away = int((event_time - now).total_seconds() / 60)
+                                        alert_msg = f"Upcoming in ~{mins_away} min: {title}"
+                                        # Push via WebSocket
+                                        await ws_manager.broadcast("reminder", {
+                                            "title": alert_msg,
+                                            "id": f"cal_alert_{event_key}",
+                                        })
+                                        # Push via phone notification
+                                        if agent.notifications and agent.notifications.is_configured():
+                                            try:
+                                                await agent.notifications.send(
+                                                    title="Calendar Alert",
+                                                    message=alert_msg,
+                                                    priority="high",
+                                                )
+                                            except Exception as e:
+                                                logger.error(f"Calendar alert notification failed: {e}")
+                                        logger.info(f"Calendar alert sent: {alert_msg}")
+                            except (ValueError, TypeError):
+                                continue
+            # Clean up old alerted events daily
+            if len(_alerted_events) > 200:
+                _alerted_events.clear()
+        except Exception as e:
+            logger.error(f"Calendar alert loop error: {e}")
+        await _asyncio.sleep(300)  # Check every 5 minutes
+
 
 app = FastAPI(
     title=f"{Config.AGENT_NAME} - Personal AI Agent",
