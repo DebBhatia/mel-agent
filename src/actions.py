@@ -671,7 +671,20 @@ class GmailPlugin:
 # ─────────────────────────────────────────────
 def register_all_plugins(action_registry):
     """Register all available plugins with the action registry."""
-    calendar = CalendarPlugin()
+    # Calendar — prefer MCP if configured, fall back to direct Google API
+    calendar = None
+    if os.getenv("MCP_CALENDAR_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            from mcp_client import CalendarMCPPlugin
+            calendar = CalendarMCPPlugin()
+            logger.info("Calendar: using MCP server backend")
+        except Exception as e:
+            logger.warning(f"Calendar MCP init failed, falling back to direct API: {e}")
+
+    if calendar is None:
+        calendar = CalendarPlugin()
+        logger.info("Calendar: using direct Google Calendar API")
+
     reservation = ReservationPlugin()
     communication = CommunicationPlugin()
 
