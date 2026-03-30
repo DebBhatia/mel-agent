@@ -243,6 +243,9 @@ User request: """
                                         "block time", "block off", "free time", "my schedule",
                                         "open schedule", "what do i have", "am i free", "am i busy",
                                         "show my", "my appointments", "my events", "my meetings",
+                                        "any calendar", "any event", "any meeting", "any appointment",
+                                        "calendar reminder", "today's calendar", "tomorrow's calendar",
+                                        "what's on my calendar", "anything on my calendar",
                                         "delete event", "remove event", "cancel event",
                                         "reschedule", "move my", "move the meeting",
                                         "set up a meeting", "set up a call"]) \
@@ -1215,15 +1218,19 @@ class AgentOrchestrator:
             "what is on", "see my", "view my", "check my", "show my",
             "get my", "display my", "upcoming", "what do i have",
             "open schedule", "my schedule", "my appointments", "my events",
-            "my calendar", "what's happening", "what is happening"
+            "my calendar", "what's happening", "what is happening",
+            "any calendar", "any event", "any meeting", "any appointment",
+            "any reminder", "anything on", "what's today", "today's calendar",
+            "calendar reminder", "calendar for today", "calendar for tomorrow",
         ]
-        day_names_pattern = r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b'
+        day_names_pattern = r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight)\b'
         create_verbs = re.search(
             r'\b(add|create|book|schedule|set up|put|place|plan|make|arrange|remind me|set a reminder|set reminder)\b', text_lower
         )
         is_list_request = (
             (any(phrase in text_lower for phrase in list_phrases) and not create_verbs)
-            or (re.search(day_names_pattern, text_lower) and not create_verbs)
+            or (re.search(day_names_pattern, text_lower) and not create_verbs and
+                any(kw in text_lower for kw in ["calendar", "event", "meeting", "appointment", "reminder", "schedule"]))
         )
 
         # ── 3. LIST / SHOW events ────────────────────────────────────────────
