@@ -133,6 +133,40 @@ button{cursor:pointer;border:none;background:none;color:inherit}
   background:var(--green);opacity:.6;
   animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite;
 }
+.status-dot.thinking{
+  background:var(--cyan);
+  box-shadow:0 0 8px rgba(6,182,212,0.8);
+}
+.status-dot.thinking::before{
+  content:'';position:absolute;inset:0;border-radius:50%;
+  background:var(--cyan);opacity:.6;
+  animation:ping 0.8s cubic-bezier(0,0,.2,1) infinite;
+}
+.status-dot.responding{
+  background:var(--magenta);
+  box-shadow:0 0 8px rgba(168,85,247,0.8);
+}
+.status-dot.responding::before{
+  content:'';position:absolute;inset:0;border-radius:50%;
+  background:var(--magenta);opacity:.6;
+  animation:ping 0.6s cubic-bezier(0,0,.2,1) infinite;
+}
+.msg-bubble.mel.streaming{
+  border-left:2px solid var(--cyan);
+}
+.typing-indicator{
+  display:inline-flex;gap:4px;padding:8px 12px;
+}
+.typing-indicator span{
+  width:6px;height:6px;border-radius:50%;background:var(--cyan);
+  animation:typingBounce 1.2s ease-in-out infinite;
+}
+.typing-indicator span:nth-child(2){animation-delay:0.2s}
+.typing-indicator span:nth-child(3){animation-delay:0.4s}
+@keyframes typingBounce{
+  0%,80%,100%{transform:translateY(0)}
+  40%{transform:translateY(-8px)}
+}
 #statusText{font-size:.7rem;font-weight:600;letter-spacing:.12em}
 #statusText.online{color:var(--green)}
 #statusText.sleeping{color:var(--amber)}
@@ -1312,6 +1346,83 @@ let currentPage = 'home';
 let sidebarCollapsed = false;
 let currentThermostatTemp = 72;
 let spotifyPolling = null;
+let _ws = null;
+
+// ═══ WEBSOCKET CLIENT ════════════════════════════════════════════════
+function connectWebSocket() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  _ws = new WebSocket(`${proto}//${location.host}/ws?token=${SESSION_TOKEN}`);
+
+  _ws.onopen = () => { console.log('[WS] Connected'); };
+
+  _ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      switch (msg.event) {
+        case 'status':
+          updateAgentStatus(msg.status);
+          break;
+        case 'reminder':
+          showToast(`Reminder: ${msg.title}`, 'info', 8000);
+          if (currentPage === 'reminders') loadReminders();
+          break;
+        case 'notification':
+          showToast(msg.title || msg.message, 'info', 5000);
+          break;
+        case 'health':
+          if (typeof msg.is_awake !== 'undefined') {
+            isAwake = msg.is_awake;
+            _updateStatusDisplay();
+          }
+          break;
+        case 'pong':
+          break;
+      }
+    } catch (err) { console.warn('[WS] Parse error:', err); }
+  };
+
+  _ws.onclose = () => {
+    console.log('[WS] Disconnected — reconnecting in 3s');
+    setTimeout(connectWebSocket, 3000);
+  };
+
+  _ws.onerror = () => {};
+}
+
+function updateAgentStatus(status) {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const term = document.getElementById('termStatus');
+  if (status === 'thinking') {
+    dot.className = 'status-dot thinking';
+    txt.className = 'thinking'; txt.textContent = 'THINKING';
+    txt.style.color = 'var(--cyan)';
+    if (term) term.textContent = 'Thinking...';
+  } else if (status === 'responding') {
+    dot.className = 'status-dot responding';
+    txt.className = 'responding'; txt.textContent = 'RESPONDING';
+    txt.style.color = 'var(--magenta)';
+    if (term) term.textContent = 'Responding...';
+  } else {
+    txt.style.color = '';
+    _updateStatusDisplay();
+  }
+}
+
+function _updateStatusDisplay() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const wakeBtn = document.getElementById('wakeBtn');
+  const term = document.getElementById('termStatus');
+  if (isAwake) {
+    dot.className = 'status-dot online'; txt.className = 'online'; txt.textContent = 'ONLINE';
+    if (wakeBtn) wakeBtn.style.color = 'var(--cyan)';
+  } else {
+    dot.className = 'status-dot sleeping'; txt.className = 'sleeping'; txt.textContent = 'SLEEPING';
+    if (wakeBtn) wakeBtn.style.color = 'var(--amber)';
+  }
+  if (term) term.textContent = isAwake ? 'Ready' : 'Sleeping';
+}
 
 // ═══ NAVIGATION ═══════════════════════════════════════════════════════
 function setPage(id) {
@@ -1376,6 +1487,74 @@ function addMsg(logId, sender, text, isError=false) {
   log.appendChild(row);
   log.scrollTop = log.scrollHeight;
 }
+
+function addStreamingMsg(logId) {
+  const log = document.getElementById(logId);
+  if (!log) return null;
+  const row = document.createElement('div');
+  row.className = 'msg-row';
+  row.innerHTML = `
+    <div class="msg-avatar mel">🤖</div>
+    <div class="msg-body">
+      <div class="msg-meta"><span class="msg-name">MEL</span><span class="msg-time">${now()}</span></div>
+      <div class="msg-bubble mel streaming"><span class="typing-indicator"><span></span><span></span><span></span></span></div>
+    </div>`;
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row.querySelector('.msg-bubble');
+}
+
+async function streamResponse(logId, text) {
+  const bubble = addStreamingMsg(logId);
+  if (!bubble) return '';
+  const log = document.getElementById(logId);
+  let fullText = '';
+
+  try {
+    const res = await fetch(`${API}/process/stream`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN},
+      body: JSON.stringify({input: text})
+    });
+
+    if (!res.ok) {
+      bubble.classList.remove('streaming');
+      bubble.innerHTML = escHtml(`Server error ${res.status}`);
+      bubble.classList.add('error-bubble');
+      return '';
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let firstToken = true;
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, {stream: true});
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {
+            if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
+            fullText += data.token;
+            bubble.innerHTML = escHtml(fullText);
+            if (log) log.scrollTop = log.scrollHeight;
+          }
+        } catch (e) {}
+      }
+    }
+
+    bubble.classList.remove('streaming');
+    if (firstToken) bubble.innerHTML = escHtml(fullText || '(no response)');
+  } catch (e) {
+    bubble.classList.remove('streaming');
+    bubble.innerHTML = escHtml(`Network error: ${e.message}`);
+    bubble.classList.add('error-bubble');
+  }
+  return fullText;
+}
 function isWakePhrase(t) {
   return /\b(wake\s*up|hey\s*mel|hello\s*mel|good\s*morning\s*mel)\b/i.test(t);
 }
@@ -1429,17 +1608,7 @@ async function checkHealth() {
     if (!res.ok) return;
     const d = await res.json();
     isAwake = d.is_awake;
-    const dot = document.getElementById('statusDot');
-    const txt = document.getElementById('statusText');
-    const wakeBtn = document.getElementById('wakeBtn');
-    if (isAwake) {
-      dot.className='status-dot online'; txt.className='online'; txt.textContent='ONLINE';
-      wakeBtn.style.color='var(--cyan)';
-    } else {
-      dot.className='status-dot sleeping'; txt.className='sleeping'; txt.textContent='SLEEPING';
-      wakeBtn.style.color='var(--amber)';
-    }
-    document.getElementById('termStatus').textContent = isAwake ? 'Ready' : 'Sleeping';
+    _updateStatusDisplay();
   } catch(e) {}
 }
 
@@ -1462,19 +1631,8 @@ async function sendCommand() {
       await checkHealth();
       if (r.ok) { const d=await r.json(); const g=d.message||''; if(g){addMsg('commandLog','mel',g);speakResponse(g);} }
     }
-    const res = await fetch(`${API}/process`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-Session-Token':SESSION_TOKEN},
-      body:JSON.stringify({input:text})
-    });
-    if (!res.ok) {
-      addMsg('commandLog','mel',`Server error ${res.status}`,true);
-    } else {
-      const d = await res.json();
-      const reply = d.response || '(no response)';
-      addMsg('commandLog','mel',reply);
-      speakResponse(reply);
-    }
+    const reply = await streamResponse('commandLog', text);
+    if (reply) speakResponse(reply);
   } catch(e) { addMsg('commandLog','mel',`Network error: ${e.message}`,true); }
 }
 
@@ -1487,13 +1645,7 @@ async function sendChat() {
   addMsg('chatLog','user',text);
   try {
     if (!isAwake) { await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}}); await checkHealth(); }
-    const res = await fetch(`${API}/process`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-Session-Token':SESSION_TOKEN},
-      body:JSON.stringify({input:text})
-    });
-    if (res.ok) { const d=await res.json(); addMsg('chatLog','mel',d.response||'(no response)'); }
-    else addMsg('chatLog','mel',`Error ${res.status}`,true);
+    await streamResponse('chatLog', text);
   } catch(e) { addMsg('chatLog','mel',`Network error: ${e.message}`,true); }
 }
 
@@ -1919,8 +2071,10 @@ async function runRoutine(id) {
     const d=await r.json();
     elevenlabsAvailable=d.elevenlabs||false;
   } catch(e) {}
-  // Poll health every 15s
-  setInterval(checkHealth,15000);
+  // Connect WebSocket for real-time updates
+  connectWebSocket();
+  // Poll health every 30s (WebSocket handles real-time status now)
+  setInterval(checkHealth,30000);
   // Start shader on home page (default)
   startShader();
 })();

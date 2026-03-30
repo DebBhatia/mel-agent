@@ -1,3 +1,4 @@
+import os
 import sys
 import shutil
 import importlib
@@ -38,9 +39,11 @@ import uvicorn
 from dotenv import load_dotenv
 load_dotenv(override=True)
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request
+import json as _json
+import asyncio as _asyncio
+from fastapi import FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
@@ -49,6 +52,33 @@ from orchestrator import AgentOrchestrator, Config
 
 logger = logging.getLogger("server")
 
+# ── WebSocket Connection Manager ──────────────
+class ConnectionManager:
+    """Tracks active WebSocket connections for real-time push updates."""
+
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, event_type: str, data: dict):
+        """Send an event to all connected clients."""
+        message = _json.dumps({"event": event_type, **data})
+        for conn in self.active_connections[:]:
+            try:
+                await conn.send_text(message)
+            except Exception:
+                self.active_connections.remove(conn)
+
+ws_manager = ConnectionManager()
+
+
 # ── Lifespan (startup / shutdown) ──────────────
 # Defined before app so it can be passed to FastAPI constructor.
 # References `agent` by name — resolved at runtime after module load.
@@ -56,7 +86,119 @@ logger = logging.getLogger("server")
 async def lifespan(app: FastAPI):
     await agent.wake_up()
     logger.info("✅ Mel auto-woke on startup")
+    # Launch background tasks
+    _asyncio.create_task(_scheduler_loop())
+    _asyncio.create_task(_health_broadcast_loop())
+    _asyncio.create_task(_calendar_alert_loop())
+    logger.info("✅ Background tasks started (scheduler, health broadcast, calendar alerts)")
     yield
+
+
+async def _scheduler_loop():
+    """Check reminders every 15 seconds and push via WebSocket + phone notifications."""
+    while True:
+        try:
+            if agent.scheduler:
+                triggered = agent.scheduler.check_and_trigger()
+                if _asyncio.iscoroutine(triggered):
+                    triggered = await triggered
+                if triggered:
+                    for reminder in triggered:
+                        title = reminder.title if hasattr(reminder, 'title') else str(reminder)
+                        rid = reminder.id if hasattr(reminder, 'id') else ''
+                        await ws_manager.broadcast("reminder", {"title": title, "id": rid})
+                        # Send push notification to phone
+                        if agent.notifications:
+                            try:
+                                await agent.notifications.send_reminder_notification(title)
+                            except Exception as e:
+                                logger.error(f"Reminder notification failed: {e}")
+        except Exception as e:
+            logger.error(f"Scheduler loop error: {e}")
+        await _asyncio.sleep(15)
+
+
+async def _health_broadcast_loop():
+    """Broadcast health status to WebSocket clients every 30 seconds."""
+    while True:
+        try:
+            if ws_manager.active_connections:
+                ollama_ok = await agent.ollama.is_available()
+                await ws_manager.broadcast("health", {
+                    "is_awake": agent.is_awake,
+                    "ollama": "online" if ollama_ok else "offline",
+                })
+        except Exception:
+            pass
+        await _asyncio.sleep(30)
+
+
+# Track which events we've already alerted for (prevent duplicate alerts)
+_alerted_events: set = set()
+
+
+async def _calendar_alert_loop():
+    """Check upcoming calendar events every 5 minutes. Alert 30 min before."""
+    await _asyncio.sleep(30)  # Wait for services to initialize
+    while True:
+        try:
+            # Only run if calendar actions are registered and agent has actions
+            if agent.actions and "calendar_list" in agent.actions.actions:
+                from datetime import timedelta
+                result = await agent.actions.execute("calendar_list", {"count": 10})
+                if result and not result.startswith(("No upcoming", "Calendar not", "Failed")):
+                    # Parse events from result text
+                    import re
+                    now = datetime.now()
+                    alert_window_start = now + timedelta(minutes=25)
+                    alert_window_end = now + timedelta(minutes=35)
+
+                    # Try to extract event times and titles
+                    for line in result.split("\n"):
+                        # Look for time patterns like "10:30 AM" or ISO timestamps
+                        time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))', line)
+                        if time_match:
+                            try:
+                                event_time_str = time_match.group(1).strip().upper()
+                                event_time = datetime.strptime(
+                                    f"{now.strftime('%Y-%m-%d')} {event_time_str}",
+                                    "%Y-%m-%d %I:%M %p"
+                                )
+                                # Check if event is within 25-35 min from now
+                                if alert_window_start <= event_time <= alert_window_end:
+                                    # Extract title (text before or after the time)
+                                    title = re.sub(r'\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)', '', line).strip()
+                                    title = re.sub(r'^[\s\-•|:]+|[\s\-•|:]+$', '', title)
+                                    event_key = f"{now.strftime('%Y-%m-%d')}_{event_time_str}_{title[:30]}"
+                                    if event_key not in _alerted_events and title:
+                                        _alerted_events.add(event_key)
+                                        mins_away = int((event_time - now).total_seconds() / 60)
+                                        alert_msg = f"Upcoming in ~{mins_away} min: {title}"
+                                        # Push via WebSocket
+                                        await ws_manager.broadcast("reminder", {
+                                            "title": alert_msg,
+                                            "id": f"cal_alert_{event_key}",
+                                        })
+                                        # Push via phone notification
+                                        if agent.notifications and agent.notifications.is_configured():
+                                            try:
+                                                await agent.notifications.send(
+                                                    title="Calendar Alert",
+                                                    message=alert_msg,
+                                                    priority="high",
+                                                )
+                                            except Exception as e:
+                                                logger.error(f"Calendar alert notification failed: {e}")
+                                        logger.info(f"Calendar alert sent: {alert_msg}")
+                            except (ValueError, TypeError):
+                                continue
+            # Clean up old alerted events daily
+            if len(_alerted_events) > 200:
+                _alerted_events.clear()
+        except Exception as e:
+            logger.error(f"Calendar alert loop error: {e}")
+        await _asyncio.sleep(300)  # Check every 5 minutes
+
 
 app = FastAPI(
     title=f"{Config.AGENT_NAME} - Personal AI Agent",
@@ -377,6 +519,63 @@ async def process_input(request: ProcessRequest):
         raise HTTPException(status_code=400, detail="Input too long (max 5000 chars)")
     response = await agent.process(request.input)
     return ProcessResponse(response=response, timestamp=datetime.now().isoformat())
+
+
+@app.post("/process/stream", dependencies=[Depends(require_api_key)])
+async def process_input_stream(request: ProcessRequest):
+    """Stream agent response token-by-token via Server-Sent Events."""
+    if not request.input.strip():
+        raise HTTPException(status_code=400, detail="Empty input")
+    if len(request.input) > 5000:
+        raise HTTPException(status_code=400, detail="Input too long (max 5000 chars)")
+
+    async def event_generator():
+        yield f"event: status\ndata: {_json.dumps({'status': 'thinking'})}\n\n"
+        await ws_manager.broadcast("status", {"status": "thinking"})
+        try:
+            async for token in agent.process_stream(request.input):
+                yield f"event: token\ndata: {_json.dumps({'token': token})}\n\n"
+            yield f"event: done\ndata: {_json.dumps({'status': 'complete'})}\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"event: error\ndata: {_json.dumps({'error': str(e)})}\n\n"
+        finally:
+            await ws_manager.broadcast("status", {"status": "idle"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Persistent WebSocket for real-time agent events (status, reminders, health)."""
+    # Authenticate via query param: ws://host/ws?token=xxx
+    token = websocket.query_params.get("token", "")
+    if not token or not secrets.compare_digest(token, AGENT_API_KEY):
+        # Also accept session tokens
+        valid_session = token in _sessions and (_time.time() - _sessions[token]) < 28800
+        if not valid_session:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+
+    await ws_manager.connect(websocket)
+    logger.info(f"WebSocket connected ({len(ws_manager.active_connections)} clients)")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = _json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_text(_json.dumps({"event": "pong"}))
+            except _json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+        logger.info(f"WebSocket disconnected ({len(ws_manager.active_connections)} clients)")
+
 
 @app.post("/wake", dependencies=[Depends(require_api_key)])
 async def wake_agent():
