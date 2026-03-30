@@ -4,5 +4,5 @@ python-dotenv>=1.0.0
 numpy>=1.26.0
 PyAudio>=0.2.14
 openai-whisper>=20240930
-openwakeword>=0.6.0
+pvporcupine>=4.0.0
 onnxruntime>=1.19.0
