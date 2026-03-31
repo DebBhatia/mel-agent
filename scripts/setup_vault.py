@@ -38,6 +38,13 @@ SECRET_KEYS = {
     "OPENWEATHER_API_KEY",
     "HA_TOKEN",
     "AGENT_ENCRYPTION_KEY",
+    "GMAIL_USER_EMAIL",          # email address
+    "NTFY_TOPIC",                # notification channel identifier
+    "NTFY_TOKEN",                # optional ntfy auth token
+    "PUSHOVER_USER_KEY",
+    "PUSHOVER_API_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
 }
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")

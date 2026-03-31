@@ -215,10 +215,34 @@ User request: """
             return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["recall", "what did i", "do you remember"]):
             return {"category": "KNOWLEDGE", "intent": "recall", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["play music", "play song", "pause music", "skip track", "next song",
-                                        "what's playing", "now playing", "what is playing", "playing now",
-                                        "spotify", "play some",
-                                        "stop music", "previous song", "volume up", "volume down"]):
+        elif any(kw in text for kw in [
+                    # Play / Resume / Continue
+                    "play music", "play a music", "play me music", "play some music",
+                    "play song", "play a song", "play me a song", "play some",
+                    "resume music", "resume playback", "resume the music",
+                    "continue playing", "continue the music", "continue music",
+                    "keep playing", "unpause",
+                    # Pause / Stop
+                    "pause music", "pause the music", "stop music", "stop the music",
+                    "stop playing", "turn off the music", "turn off music", "mute the music", "mute music",
+                    # Skip / Next
+                    "skip track", "skip this song", "skip song", "next song", "next track", "play next",
+                    # Previous
+                    "previous song", "previous track", "go back", "last song", "play previous",
+                    # Now playing
+                    "what's playing", "now playing", "what is playing", "playing now",
+                    "what song is this", "what song", "current song", "current track",
+                    # Volume
+                    "volume up", "volume down", "set volume", "turn up", "turn down",
+                    # General
+                    "spotify",
+                ]) \
+                or (text.strip() in ("pause", "skip", "resume", "next", "previous")) \
+                or __import__('re').search(r'\b(pause|skip|resume)\b', text) and any(w in text for w in ["music", "song", "track", "spotify", "playing"]) \
+                or __import__('re').search(r'\b(stop|pause|skip|mute)\b.*\b(music|song|track|playing|spotify)\b', text) \
+                or __import__('re').search(r'\bplay\b.{0,15}\b(music|song|track|playlist|album|genre|country|rock|pop|jazz|hip.?hop|r&b|classical|lo.?fi|chill|rap|indie|latin|edm|metal|blues|folk|punk|soul|reggae|electronic|beats|mix|radio|station|vibe|mood)\b', text) \
+                or (__import__('re').search(r'\bplay\b\s+(?:me\s+|us\s+)?(?:some\s+|the\s+|a\s+|today.?s?\s+)?\w', text)
+                    and not any(w in text for w in ["play game", "play video", "play movie", "play a role", "display"])):
             return {"category": "MUSIC", "intent": "control", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["remind me", "set a reminder", "set reminder", "alarm",
                                         "in 30 minutes", "in an hour", "remind at"]):
@@ -1609,37 +1633,49 @@ Request: {summary}"""
         if not self.spotify.auth.is_authenticated:
             return "Spotify not connected. Visit /spotify/auth in your browser to authenticate."
 
-        if any(kw in text for kw in ["pause", "stop music"]):
+        import re as _re
+
+        # ── PAUSE / STOP ──
+        if any(kw in text for kw in ["pause", "stop music", "stop the music", "stop playing",
+                                      "turn off the music", "turn off music", "mute the music", "mute music"]) \
+                or _re.search(r'\b(stop|pause|mute)\b.*\b(music|song|track|playing)\b', text):
             return await self.actions.execute("music_pause", {})
 
-        elif any(kw in text for kw in ["skip", "next song", "next track"]):
+        # ── SKIP / NEXT ──
+        elif any(kw in text for kw in ["skip", "next song", "next track", "skip track",
+                                        "skip this song", "skip song", "play next"]):
             return await self.actions.execute("music_skip", {})
 
-        elif any(kw in text for kw in ["what's playing", "now playing", "current song", "what song"]):
+        # ── PREVIOUS ──
+        elif any(kw in text for kw in ["previous", "go back", "last song", "play previous",
+                                        "previous song", "previous track"]):
+            return await self.spotify.previous_track()
+
+        # ── NOW PLAYING ──
+        elif any(kw in text for kw in ["what's playing", "now playing", "what is playing",
+                                        "current song", "current track", "what song"]):
             return await self.actions.execute("music_now_playing", {})
 
-        elif any(kw in text for kw in ["previous", "go back", "last song"]):
-            data = await self.spotify.previous_track()
-            return data
-
-        elif "volume" in text:
-            import re
-            m = re.search(r'(\d+)', text)
+        # ── VOLUME ──
+        elif any(kw in text for kw in ["volume", "turn up", "turn down", "louder", "quieter"]):
+            m = _re.search(r'(\d+)', text)
             if m:
                 return await self.spotify.set_volume(int(m.group(1)))
-            elif "up" in text:
+            elif any(w in text for w in ["up", "louder", "higher"]):
                 return await self.spotify.set_volume(80)
-            elif "down" in text:
+            elif any(w in text for w in ["down", "quieter", "lower"]):
                 return await self.spotify.set_volume(30)
             return await self.spotify.set_volume(50)
 
-        elif any(kw in text for kw in ["play"]):
-            # Extract what to play
-            import re
-            play_match = re.search(r'play\s+(?:me\s+)?(?:some\s+)?(.+)', text)
+        # ── PLAY (must be last — broad match) ──
+        elif "play" in text or "resume" in text or "continue" in text or "unpause" in text or "keep playing" in text:
+            play_match = _re.search(r'play\s+(?:me\s+|us\s+)?(?:some\s+|the\s+|a\s+|today.?s?\s+)?(.+)', text)
             if play_match:
                 query = play_match.group(1).strip()
-                return await self.actions.execute("music_play", {"query": query})
+                # Clean trailing filler words
+                query = _re.sub(r'\s+(for me|for us|please|right now|now)$', '', query)
+                if query and query not in ("music", "a music", "the music", "some music", "song", "a song", "songs", "me a song"):
+                    return await self.actions.execute("music_play", {"query": query})
             return await self.actions.execute("music_play", {})
 
         else:

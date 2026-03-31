@@ -19,6 +19,18 @@ logger = logging.getLogger("notifications")
 NOTIFICATION_LOG = os.path.join(os.path.dirname(__file__), "..", "data", "notification_log.json")
 
 
+def _load_secret(key: str, default: str = "") -> str:
+    """Load a secret from the encrypted vault; fall back to env var."""
+    try:
+        from security import SecretVault
+        val = SecretVault().get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
+
 @dataclass
 class Notification:
     id: str
@@ -39,8 +51,8 @@ class NtfyBackend:
 
     def __init__(self):
         self.server = os.getenv("NTFY_SERVER", "https://ntfy.sh")
-        self.topic = os.getenv("NTFY_TOPIC", "")
-        self.token = os.getenv("NTFY_TOKEN", "")  # Optional auth token
+        self.topic = _load_secret("NTFY_TOPIC")
+        self.token = _load_secret("NTFY_TOKEN")
 
     def is_configured(self) -> bool:
         return bool(self.topic)
@@ -73,8 +85,8 @@ class PushoverBackend:
     """Pushover — reliable push notifications ($5 one-time purchase)."""
 
     def __init__(self):
-        self.user_key = os.getenv("PUSHOVER_USER_KEY", "")
-        self.api_token = os.getenv("PUSHOVER_API_TOKEN", "")
+        self.user_key = _load_secret("PUSHOVER_USER_KEY")
+        self.api_token = _load_secret("PUSHOVER_API_TOKEN")
 
     def is_configured(self) -> bool:
         return bool(self.user_key and self.api_token)
@@ -115,8 +127,8 @@ class TelegramBackend:
     """Telegram Bot API — free, feature-rich notifications."""
 
     def __init__(self):
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.bot_token = _load_secret("TELEGRAM_BOT_TOKEN")
+        self.chat_id = _load_secret("TELEGRAM_CHAT_ID")
 
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id)

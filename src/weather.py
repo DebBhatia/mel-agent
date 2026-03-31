@@ -16,13 +16,25 @@ import httpx
 logger = logging.getLogger("weather")
 
 
+def _load_secret(key: str, default: str = "") -> str:
+    """Load a secret from the encrypted vault; fall back to env var."""
+    try:
+        from security import SecretVault
+        val = SecretVault().get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
+
 class WeatherService:
     """Fetches weather data from OpenWeatherMap API."""
 
     BASE_URL = "https://api.openweathermap.org/data/2.5"
 
     def __init__(self):
-        self.api_key = os.getenv("OPENWEATHER_API_KEY", "")
+        self.api_key = _load_secret("OPENWEATHER_API_KEY")
         self.default_city = os.getenv("WEATHER_CITY", "Dallas")
         self.units = os.getenv("WEATHER_UNITS", "imperial")  # imperial=°F, metric=°C
 

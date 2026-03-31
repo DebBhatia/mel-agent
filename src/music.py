@@ -13,6 +13,7 @@ All tokens stored locally — never sent to cloud AI.
 import os
 import json
 import time
+import asyncio
 import logging
 from typing import Optional
 from urllib.parse import urlencode
@@ -21,12 +22,24 @@ import httpx
 
 logger = logging.getLogger("music")
 
+
+def _load_secret(key: str, default: str = "") -> str:
+    """Load a secret from the encrypted vault; fall back to env var."""
+    try:
+        from security import SecretVault
+        val = SecretVault().get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SCOPES = (
-    "user-read-playback-state user-modify-playback-state user-read-currently-playing "
-    "playlist-read-private playlist-read-collaborative user-library-read"
+    "streaming user-read-playback-state user-modify-playback-state user-read-currently-playing "
+    "playlist-read-private playlist-read-collaborative user-library-read user-read-email user-read-private"
 )
 
 
@@ -34,9 +47,9 @@ class SpotifyAuth:
     """Handles Spotify OAuth2 PKCE flow with local token persistence."""
 
     def __init__(self):
-        self.client_id = os.getenv("SPOTIFY_CLIENT_ID", "")
-        self.client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-        self.redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8000/spotify/callback")
+        self.client_id = _load_secret("SPOTIFY_CLIENT_ID")
+        self.client_secret = _load_secret("SPOTIFY_CLIENT_SECRET")
+        self.redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8000/spotify/callback")
         self.token_path = os.path.expanduser("~/.config/agent/spotify_token.json")
         self._token_data = {}
         self._load_token()
@@ -144,6 +157,7 @@ class SpotifyPlayer:
 
     def __init__(self):
         self.auth = SpotifyAuth()
+        self.dashboard_device_id = None  # Set by /spotify/register-device
 
     async def _api(self, method: str, endpoint: str, json_body: dict = None, params: dict = None) -> Optional[dict]:
         token = await self.auth.get_access_token()
@@ -153,20 +167,42 @@ class SpotifyPlayer:
         url = f"{SPOTIFY_API_BASE}{endpoint}"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
+                kwargs = {"headers": headers}
+                if json_body is not None:
+                    kwargs["json"] = json_body
+                if params is not None:
+                    kwargs["params"] = params
+
                 if method == "GET":
-                    resp = await client.get(url, headers=headers, params=params)
+                    resp = await client.get(url, **kwargs)
                 elif method == "PUT":
-                    resp = await client.put(url, headers=headers, json=json_body)
+                    if json_body is None:
+                        resp = await client.put(url, headers=headers, content=b"")
+                    else:
+                        resp = await client.put(url, headers=headers, json=json_body)
                 elif method == "POST":
-                    resp = await client.post(url, headers=headers, json=json_body)
+                    if json_body is None:
+                        resp = await client.post(url, headers=headers, content=b"")
+                    else:
+                        resp = await client.post(url, headers=headers, json=json_body)
                 else:
                     return None
-                if resp.status_code in (200, 201):
-                    return resp.json() if resp.content else {}
+
+                if resp.status_code in (200, 201, 202):
+                    if not resp.content:
+                        return {}
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return {}
                 elif resp.status_code == 204:
                     return {}
+                elif resp.status_code == 403:
+                    logger.warning(f"Spotify API {method} {endpoint}: 403 Forbidden (Premium required?)")
+                    return None
                 else:
-                    logger.warning(f"Spotify API {method} {endpoint}: {resp.status_code}")
+                    body = resp.text[:150] if resp.text else ""
+                    logger.warning(f"Spotify API {method} {endpoint}: {resp.status_code} {body}")
                     return None
         except Exception as e:
             logger.error(f"Spotify API error: {e}")
@@ -193,16 +229,63 @@ class SpotifyPlayer:
             "device": data.get("device", {}).get("name", "Unknown"),
         }
 
-    async def play(self, uri: str = None, context_uri: str = None) -> str:
+    async def play(self, uri: str = None, context_uri: str = None, device_id: str = None) -> str:
         body = {}
         if context_uri:
             body["context_uri"] = context_uri
         elif uri:
             body["uris"] = [uri]
-        result = await self._api("PUT", "/me/player/play", json_body=body if body else None)
+
+        # Find a target device
+        target_id = device_id
+        target_name = "your device"
+        if not target_id:
+            # 1st priority: registered dashboard web player (Mel Dashboard SDK)
+            if self.dashboard_device_id:
+                target_id = self.dashboard_device_id
+                target_name = "Mel Dashboard"
+            else:
+                # 2nd: discover from Spotify API
+                devices = await self.get_devices()
+                if devices:
+                    mel_dev = next((d for d in devices if "mel" in d["name"].lower()), None)
+                    active_dev = next((d for d in devices if d["is_active"]), None)
+                    pick = mel_dev or active_dev or devices[0]
+                    target_id = pick["id"]
+                    target_name = pick["name"]
+                else:
+                    return "No Spotify device found. Open the dashboard Music page or Spotify app."
+
+        # Transfer playback to target device, then play
+        await self._api("PUT", "/me/player", json_body={"device_ids": [target_id], "play": False})
+        await asyncio.sleep(0.3)
+        result = await self._api("PUT", f"/me/player/play?device_id={target_id}",
+                                 json_body=body if body else None)
         if result is not None:
-            return "Playing music."
-        return "Could not start playback. Make sure Spotify is open on a device."
+            await asyncio.sleep(0.8)
+            np = await self.now_playing()
+            if np.get("track"):
+                return f"Now playing: {np['track']} by {np['artist']} on {target_name}."
+            return f"Playing on {target_name}."
+        return f"Could not start playback on {target_name}. Try refreshing the dashboard."
+
+    async def _ensure_active_device(self) -> Optional[str]:
+        """Make sure there's an active device. Returns device_id or None."""
+        # Prefer registered dashboard device
+        if self.dashboard_device_id:
+            return self.dashboard_device_id
+        state = await self._api("GET", "/me/player")
+        if state and state.get("device"):
+            return state["device"].get("id")
+        # No active session — find a device and transfer
+        devices = await self.get_devices()
+        if not devices:
+            return None
+        mel_dev = next((d for d in devices if "mel" in d["name"].lower()), None)
+        pick = mel_dev or devices[0]
+        await self._api("PUT", "/me/player", json_body={"device_ids": [pick["id"]], "play": False})
+        await asyncio.sleep(0.3)
+        return pick["id"]
 
     async def pause(self) -> str:
         result = await self._api("PUT", "/me/player/pause")
@@ -211,16 +294,30 @@ class SpotifyPlayer:
         return "Could not pause. Is Spotify playing?"
 
     async def next_track(self) -> str:
+        device_id = await self._ensure_active_device()
+        if not device_id:
+            return "No Spotify device found. Open Spotify or go to the Music page."
         result = await self._api("POST", "/me/player/next")
         if result is not None:
+            await asyncio.sleep(0.5)
+            np = await self.now_playing()
+            if np.get("track"):
+                return f"Now playing: {np['track']} by {np['artist']}."
             return "Skipped to next track."
-        return "Could not skip track."
+        return "Could not skip track. Try playing something first."
 
     async def previous_track(self) -> str:
+        device_id = await self._ensure_active_device()
+        if not device_id:
+            return "No Spotify device found. Open Spotify or go to the Music page."
         result = await self._api("POST", "/me/player/previous")
         if result is not None:
+            await asyncio.sleep(0.5)
+            np = await self.now_playing()
+            if np.get("track"):
+                return f"Now playing: {np['track']} by {np['artist']}."
             return "Playing previous track."
-        return "Could not go back."
+        return "Could not go back. Try playing something first."
 
     async def set_volume(self, volume: int) -> str:
         volume = max(0, min(100, volume))
@@ -286,9 +383,14 @@ def register_music_plugins(action_registry):
     async def play_music(params):
         query = params.get("query", "")
         if query:
+            # Try track search first
             results = await player.search(query, "track", 1)
             if results:
                 return await player.play(uri=results[0]["uri"])
+            # Fall back to playlist search (e.g. "today's country", "chill vibes")
+            playlists = await player.search(query, "playlist", 1)
+            if playlists:
+                return await player.play(context_uri=playlists[0]["uri"])
             return f"No results found for '{query}'."
         return await player.play()
 

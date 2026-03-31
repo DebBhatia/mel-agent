@@ -523,12 +523,134 @@ button{cursor:pointer;border:none;background:none;color:inherit}
 }
 .play-btn:hover{transform:scale(1.05);box-shadow:0 0 32px rgba(255,255,255,.35)}
 .volume-wrap{display:flex;align-items:center;gap:10px;width:200px}
-.volume-slider{
-  flex:1;height:4px;background:rgba(255,255,255,.1);border-radius:99px;
-  cursor:pointer;overflow:hidden;
+.volume-range{
+  flex:1;height:4px;-webkit-appearance:none;appearance:none;
+  background:rgba(255,255,255,.1);border-radius:99px;cursor:pointer;outline:none;
 }
-.volume-fill{height:100%;background:rgba(255,255,255,.4);width:70%}
+.volume-range::-webkit-slider-thumb{
+  -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+  background:#fff;box-shadow:0 0 6px rgba(255,255,255,.4);cursor:pointer;
+}
+.volume-range::-moz-range-thumb{
+  width:14px;height:14px;border-radius:50%;border:none;
+  background:#fff;box-shadow:0 0 6px rgba(255,255,255,.4);cursor:pointer;
+}
 #musicNotConnected{text-align:center;padding:20px;color:var(--dim);font-size:.85rem}
+
+/* ═══ FLOATING SPOTIFY MINI-PLAYER ═══ */
+.spotify-fab{
+  position:fixed;bottom:24px;right:24px;z-index:9999;
+  display:flex;align-items:center;gap:0;
+  transition:all .4s cubic-bezier(.23,1,.32,1);
+  pointer-events:auto;
+}
+.spotify-fab.hidden{
+  transform:translateY(80px) scale(.8);opacity:0;pointer-events:none;
+}
+.spotify-fab-btn{
+  width:52px;height:52px;border-radius:50%;
+  background:linear-gradient(135deg,#1DB954 0%,#1ed760 100%);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;position:relative;
+  box-shadow:0 4px 20px rgba(29,185,84,.4),0 8px 32px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.25);
+  transition:all .3s cubic-bezier(.23,1,.32,1);
+  flex-shrink:0;z-index:2;
+}
+.spotify-fab-btn:hover{
+  transform:scale(1.08);
+  box-shadow:0 6px 28px rgba(29,185,84,.55),0 12px 40px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.3);
+}
+.spotify-fab-btn:active{transform:scale(.95)}
+.spotify-fab-btn svg{width:26px;height:26px;fill:#fff;filter:drop-shadow(0 1px 2px rgba(0,0,0,.2))}
+.spotify-fab-btn .fab-eq{
+  display:flex;align-items:flex-end;gap:2px;height:18px;
+}
+.spotify-fab-btn .fab-eq span{
+  width:3px;background:#fff;border-radius:2px;
+  animation:fabEq .8s ease-in-out infinite alternate;
+}
+.spotify-fab-btn .fab-eq span:nth-child(1){height:8px;animation-delay:0s}
+.spotify-fab-btn .fab-eq span:nth-child(2){height:14px;animation-delay:.15s}
+.spotify-fab-btn .fab-eq span:nth-child(3){height:10px;animation-delay:.3s}
+.spotify-fab-btn .fab-eq span:nth-child(4){height:16px;animation-delay:.1s}
+@keyframes fabEq{
+  0%{height:4px}100%{height:18px}
+}
+.spotify-fab-btn.paused .fab-eq span{animation:none;height:4px;opacity:.5}
+
+/* Mini-player panel */
+.spotify-mini{
+  position:absolute;bottom:60px;right:0;
+  width:300px;
+  background:rgba(12,12,18,.92);
+  backdrop-filter:blur(24px) saturate(1.6);
+  -webkit-backdrop-filter:blur(24px) saturate(1.6);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:16px;
+  padding:16px;
+  box-shadow:0 16px 48px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.04),0 0 60px rgba(29,185,84,.08);
+  transform:translateY(12px) scale(.92);opacity:0;
+  pointer-events:none;
+  transition:all .3s cubic-bezier(.23,1,.32,1);
+}
+.spotify-mini.open{
+  transform:translateY(0) scale(1);opacity:1;pointer-events:auto;
+}
+.spotify-mini-header{
+  display:flex;align-items:center;gap:10px;margin-bottom:14px;
+}
+.spotify-mini-art{
+  width:48px;height:48px;border-radius:10px;
+  background:linear-gradient(135deg,#1DB954,#191414);
+  overflow:hidden;flex-shrink:0;
+  box-shadow:0 4px 12px rgba(0,0,0,.3);
+}
+.spotify-mini-art img{width:100%;height:100%;object-fit:cover}
+.spotify-mini-track{flex:1;min-width:0}
+.spotify-mini-track .smt-name{
+  font-size:.82rem;font-weight:600;color:#fff;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.spotify-mini-track .smt-artist{
+  font-size:.7rem;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  margin-top:2px;
+}
+.spotify-mini-progress{
+  width:100%;height:3px;background:rgba(255,255,255,.08);
+  border-radius:99px;margin-bottom:12px;overflow:hidden;
+}
+.spotify-mini-progress-fill{
+  height:100%;border-radius:99px;
+  background:linear-gradient(90deg,#1DB954,#1ed760);
+  transition:width .3s linear;
+}
+.spotify-mini-controls{
+  display:flex;align-items:center;justify-content:center;gap:20px;
+}
+.spotify-mini-controls button{
+  color:rgba(255,255,255,.6);font-size:1rem;
+  transition:all .15s;padding:4px;
+}
+.spotify-mini-controls button:hover{color:#fff;transform:scale(1.15)}
+.spotify-mini-controls .smc-play{
+  width:36px;height:36px;border-radius:50%;
+  background:#fff;color:#000;font-size:.9rem;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 12px rgba(255,255,255,.2);
+  transition:all .2s;
+}
+.spotify-mini-controls .smc-play:hover{transform:scale(1.1);box-shadow:0 4px 16px rgba(255,255,255,.3)}
+.spotify-mini-badge{
+  display:flex;align-items:center;gap:4px;margin-top:12px;
+  font-size:.58rem;color:rgba(255,255,255,.25);
+  font-family:'JetBrains Mono',monospace;
+}
+.spotify-mini-badge .smi-dot{
+  width:5px;height:5px;border-radius:50%;background:#1DB954;
+  box-shadow:0 0 6px rgba(29,185,84,.5);
+}
+.spotify-mini-badge.auto-paused .smi-dot{background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,.5)}
 
 /* ═══ SMART HOME ════════════════════════════════════════════════════════ */
 #page-smarthome{gap:16px;overflow:hidden}
@@ -864,6 +986,7 @@ button{cursor:pointer;border:none;background:none;color:inherit}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 </head>
 <body>
 <div id="app">
@@ -1101,14 +1224,16 @@ button{cursor:pointer;border:none;background:none;color:inherit}
           </div>
           <div class="music-controls">
             <button class="music-btn" onclick="spotifyCmd('prev')" title="Previous">⏮</button>
-            <button class="music-btn" onclick="spotifyCmd('prev')" title="Previous">⏭︎</button>
             <button class="play-btn" id="musicPlayBtn" onclick="spotifyCmd('toggle')">▶</button>
             <button class="music-btn" onclick="spotifyCmd('next')" title="Next">⏭</button>
-            <button class="music-btn" onclick="spotifyCmd('next')" title="Next">🔀</button>
           </div>
           <div class="volume-wrap">
             <span style="font-size:.85rem;color:var(--dim)">🔉</span>
-            <div class="volume-slider"><div class="volume-fill"></div></div>
+            <input type="range" min="0" max="100" value="70" class="volume-range" id="volumeSlider"
+              oninput="if(spotifyWebPlayer)spotifyWebPlayer.setVolume(this.value/100)">
+          </div>
+          <div id="webPlayerStatus" style="font-size:.68rem;color:var(--dim);margin-top:12px;font-family:'JetBrains Mono',monospace">
+            Initializing web player...
           </div>
         </div>
       </div>
@@ -1619,11 +1744,13 @@ async function sendCommand() {
   if (!text) return;
   input.value = '';
   addMsg('commandLog','user',text);
+  await smartPause();
   try {
     if (isWakePhrase(text)) {
       const r = await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
       await checkHealth();
       if (r.ok) { const d=await r.json(); const g=d.message||''; if(g){addMsg('commandLog','mel',g);speakResponse(g);} }
+      await smartResume();
       return;
     }
     if (!isAwake) {
@@ -1634,6 +1761,7 @@ async function sendCommand() {
     const reply = await streamResponse('commandLog', text);
     if (reply) speakResponse(reply);
   } catch(e) { addMsg('commandLog','mel',`Network error: ${e.message}`,true); }
+  await smartResume();
 }
 
 // ═══ SEND CHAT (Command Center) ══════════════════════════════════════
@@ -1643,10 +1771,12 @@ async function sendChat() {
   if (!text) return;
   input.value = '';
   addMsg('chatLog','user',text);
+  await smartPause();
   try {
     if (!isAwake) { await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}}); await checkHealth(); }
     await streamResponse('chatLog', text);
   } catch(e) { addMsg('chatLog','mel',`Network error: ${e.message}`,true); }
+  await smartResume();
 }
 
 // ═══ VOICE INPUT ══════════════════════════════════════════════════════
@@ -1820,6 +1950,82 @@ async function cancelReminder(id) {
 }
 
 // ═══ MUSIC / SPOTIFY ═════════════════════════════════════════════════
+// ── Spotify Web Playback SDK ──
+let spotifyWebPlayer = null;
+let spotifyWebDeviceId = null;
+let spotifySDKReady = false;
+
+window.onSpotifyWebPlaybackSDKReady = () => { spotifySDKReady = true; };
+
+async function initSpotifyWebPlayer() {
+  if (spotifyWebPlayer) return; // already initialized
+  try {
+    const r = await fetch(`${API}/spotify/token`, {headers:{'X-Session-Token':SESSION_TOKEN}});
+    if (!r.ok) return;
+    const {access_token} = await r.json();
+    if (!access_token || !spotifySDKReady) return;
+
+    spotifyWebPlayer = new Spotify.Player({
+      name: 'Mel Dashboard',
+      getOAuthToken: async cb => {
+        try {
+          const tr = await fetch(`${API}/spotify/token`, {headers:{'X-Session-Token':SESSION_TOKEN}});
+          const td = await tr.json();
+          cb(td.access_token);
+        } catch(e) { cb(access_token); }
+      },
+      volume: 0.7
+    });
+
+    spotifyWebPlayer.addListener('ready', ({device_id}) => {
+      spotifyWebDeviceId = device_id;
+      console.log('Spotify Web Player ready, device:', device_id);
+      const el = document.getElementById('webPlayerStatus');
+      if (el) { el.textContent = '🔊 Web Player ready'; el.style.color = 'var(--green)'; }
+      // Register device with backend so it prefers this device for playback
+      fetch(`${API}/spotify/register-device?device_id=${device_id}`, {
+        method: 'POST', headers: {'X-Session-Token': SESSION_TOKEN}
+      });
+    });
+
+    spotifyWebPlayer.addListener('not_ready', () => {
+      spotifyWebDeviceId = null;
+      const el = document.getElementById('webPlayerStatus');
+      if (el) { el.textContent = 'Web Player offline'; el.style.color = 'var(--dim)'; }
+    });
+
+    spotifyWebPlayer.addListener('player_state_changed', state => {
+      if (!state) return;
+      const track = state.track_window.current_track;
+      document.getElementById('musicTrackName').textContent = track.name || 'Nothing playing';
+      document.getElementById('musicArtist').textContent =
+        track.artists.map(a=>a.name).join(', ') + (track.album.name ? ` • ${track.album.name}` : '');
+      document.getElementById('musicPlayBtn').textContent = state.paused ? '▶' : '⏸';
+      if (track.album.images && track.album.images.length) {
+        const art = document.getElementById('albumArt');
+        art.innerHTML = `<img src="${track.album.images[0].url}" alt="Album art">`;
+      }
+      if (state.duration > 0) {
+        const pct = (state.position / state.duration * 100).toFixed(1);
+        document.getElementById('musicProgress').style.width = pct + '%';
+        const e = Math.floor(state.position/1000), t = Math.floor(state.duration/1000);
+        document.getElementById('musicElapsed').textContent = `${Math.floor(e/60)}:${String(e%60).padStart(2,'0')}`;
+        document.getElementById('musicTotal').textContent = `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`;
+      }
+    });
+
+    spotifyWebPlayer.addListener('initialization_error', ({message}) => console.error('Spotify init error:', message));
+    spotifyWebPlayer.addListener('authentication_error', ({message}) => console.error('Spotify auth error:', message));
+    spotifyWebPlayer.addListener('account_error', ({message}) => {
+      console.error('Spotify account error:', message);
+      const el = document.getElementById('webPlayerStatus');
+      if (el) { el.textContent = '⚠ Premium required for web player'; el.style.color = '#f0a030'; }
+    });
+
+    await spotifyWebPlayer.connect();
+  } catch(e) { console.error('Web player init failed:', e); }
+}
+
 async function checkSpotifyStatus() {
   try {
     const r = await fetch(`${API}/spotify/status`,{headers:{'X-Session-Token':SESSION_TOKEN}});
@@ -1827,10 +2033,12 @@ async function checkSpotifyStatus() {
     const status = document.getElementById('musicStatus');
     if (d.authenticated) {
       status.className='music-status connected'; status.innerHTML='<span>● Connected to Spotify</span>';
+      initSpotifyWebPlayer();
       updateNowPlaying();
       if (!spotifyPolling) spotifyPolling=setInterval(updateNowPlaying,5000);
     } else {
-      status.className='music-status disconnected'; status.innerHTML='<span>○ Spotify not connected</span>';
+      status.className='music-status disconnected';
+      status.innerHTML='<span>○ Not connected — <a href="/spotify/auth" target="_blank" style="color:var(--cyan);text-decoration:underline">Connect Spotify</a></span>';
     }
   } catch(e) {}
 }
@@ -1842,6 +2050,9 @@ async function updateNowPlaying() {
       document.getElementById('musicTrackName').textContent=d.track;
       document.getElementById('musicArtist').textContent=(d.artist||'')+(d.album?` • ${d.album}`:'');
       document.getElementById('musicPlayBtn').textContent=d.is_playing?'⏸':'▶';
+      if (d.album_art) {
+        document.getElementById('albumArt').innerHTML=`<img src="${d.album_art}" alt="Album art">`;
+      }
       if (d.duration_ms>0) {
         const pct=(d.progress_ms/d.duration_ms*100).toFixed(1);
         document.getElementById('musicProgress').style.width=pct+'%';
@@ -1856,20 +2067,22 @@ async function spotifyCmd(action) {
   try {
     if (action==='toggle') {
       const btn=document.getElementById('musicPlayBtn');
-      if (btn.textContent==='⏸') {
-        await fetch(`${API}/spotify/pause`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
-        btn.textContent='▶';
-      } else {
+      const isPaused = btn.textContent==='▶';
+      // Always use API — works whether web player or remote device
+      if (isPaused) {
         await fetch(`${API}/spotify/play`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
         btn.textContent='⏸';
+      } else {
+        await fetch(`${API}/spotify/pause`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
+        btn.textContent='▶';
       }
     } else if (action==='next') {
       await fetch(`${API}/spotify/next`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
     } else if (action==='prev') {
-      await fetch(`${API}/process`,{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':SESSION_TOKEN},body:JSON.stringify({input:'previous song'})});
+      await fetch(`${API}/spotify/previous`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
     }
-    setTimeout(updateNowPlaying,500);
-  } catch(e) {}
+    setTimeout(updateNowPlaying, 600);
+  } catch(e) { console.error('spotifyCmd error:', e); }
 }
 
 // ═══ SMART HOME ═══════════════════════════════════════════════════════
@@ -2075,6 +2288,21 @@ async function runRoutine(id) {
   connectWebSocket();
   // Poll health every 30s (WebSocket handles real-time status now)
   setInterval(checkHealth,30000);
+  // Initialize Spotify Web Playback SDK on page load (makes dashboard a playback device)
+  try {
+    const sr = await fetch(`${API}/spotify/status`, {headers:{'X-Session-Token':SESSION_TOKEN}});
+    const sd = await sr.json();
+    if (sd.authenticated) {
+      // Wait for SDK script to load, then init
+      const waitSDK = () => new Promise(resolve => {
+        if (spotifySDKReady) return resolve();
+        const t = setInterval(() => { if (spotifySDKReady) { clearInterval(t); resolve(); } }, 200);
+        setTimeout(() => { clearInterval(t); resolve(); }, 5000); // max 5s wait
+      });
+      await waitSDK();
+      await initSpotifyWebPlayer();
+    }
+  } catch(e) { console.log('Spotify SDK init skipped:', e); }
   // Start shader on home page (default)
   startShader();
 })();
@@ -2157,6 +2385,177 @@ function stopShader() {
   material.dispose();
   _shaderState = null;
 }
+</script>
+
+<!-- ═══ FLOATING SPOTIFY MINI-PLAYER ═══ -->
+<div class="spotify-fab hidden" id="spotifyFab">
+  <div class="spotify-mini" id="spotifyMini">
+    <div class="spotify-mini-header">
+      <div class="spotify-mini-art" id="fabAlbumArt"></div>
+      <div class="spotify-mini-track">
+        <div class="smt-name" id="fabTrackName">Nothing playing</div>
+        <div class="smt-artist" id="fabArtist">—</div>
+      </div>
+    </div>
+    <div class="spotify-mini-progress">
+      <div class="spotify-mini-progress-fill" id="fabProgress" style="width:0%"></div>
+    </div>
+    <div class="spotify-mini-controls">
+      <button onclick="fabCmd('prev')" title="Previous">⏮</button>
+      <button class="smc-play" id="fabPlayBtn" onclick="fabCmd('toggle')">▶</button>
+      <button onclick="fabCmd('next')" title="Next">⏭</button>
+    </div>
+    <div class="spotify-mini-badge" id="fabBadge">
+      <span class="smi-dot"></span>
+      <span id="fabBadgeText">Mel Dashboard</span>
+    </div>
+  </div>
+  <div class="spotify-fab-btn" id="spotifyFabBtn" onclick="toggleFabMini()">
+    <div class="fab-eq">
+      <span></span><span></span><span></span><span></span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══ FLOATING MINI-PLAYER LOGIC ═══
+let fabOpen = false;
+let fabMusicPlaying = false;
+let fabAutoPaused = false;
+let fabPollTimer = null;
+
+function toggleFabMini() {
+  fabOpen = !fabOpen;
+  document.getElementById('spotifyMini').classList.toggle('open', fabOpen);
+}
+
+// Close mini-player when clicking outside
+document.addEventListener('click', (e) => {
+  if (fabOpen && !e.target.closest('.spotify-fab')) {
+    fabOpen = false;
+    document.getElementById('spotifyMini').classList.remove('open');
+  }
+});
+
+async function fabCmd(action) {
+  try {
+    if (action === 'toggle') {
+      const btn = document.getElementById('fabPlayBtn');
+      const isPaused = btn.textContent === '▶';
+      if (isPaused) {
+        await fetch(`${API}/spotify/play`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+        btn.textContent = '⏸';
+      } else {
+        await fetch(`${API}/spotify/pause`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+        btn.textContent = '▶';
+      }
+    } else if (action === 'next') {
+      await fetch(`${API}/spotify/next`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+    } else if (action === 'prev') {
+      await fetch(`${API}/spotify/previous`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+    }
+    setTimeout(updateFabState, 600);
+  } catch(e) { console.error('fabCmd error:', e); }
+}
+
+async function updateFabState() {
+  try {
+    const r = await fetch(`${API}/spotify/now-playing`, {headers:{'X-Session-Token':SESSION_TOKEN}});
+    const d = await r.json();
+    const fab = document.getElementById('spotifyFab');
+    const fabBtn = document.getElementById('spotifyFabBtn');
+
+    if (d.track) {
+      fab.classList.remove('hidden');
+      fabMusicPlaying = d.is_playing;
+      fabBtn.classList.toggle('paused', !d.is_playing);
+      document.getElementById('fabTrackName').textContent = d.track;
+      document.getElementById('fabArtist').textContent = d.artist || '—';
+      document.getElementById('fabPlayBtn').textContent = d.is_playing ? '⏸' : '▶';
+      if (d.album_art) {
+        document.getElementById('fabAlbumArt').innerHTML = `<img src="${d.album_art}" alt="">`;
+      }
+      if (d.duration_ms > 0) {
+        const pct = (d.progress_ms / d.duration_ms * 100).toFixed(1);
+        document.getElementById('fabProgress').style.width = pct + '%';
+      }
+      // Update badge
+      const badge = document.getElementById('fabBadge');
+      const badgeText = document.getElementById('fabBadgeText');
+      if (fabAutoPaused) {
+        badge.classList.add('auto-paused');
+        badgeText.textContent = 'Paused — Mel is talking';
+      } else {
+        badge.classList.remove('auto-paused');
+        badgeText.textContent = d.device || 'Mel Dashboard';
+      }
+    } else {
+      // No track — only hide if we haven't recently been playing
+      if (!fabMusicPlaying && !fabAutoPaused) {
+        fab.classList.add('hidden');
+      }
+    }
+  } catch(e) {}
+}
+
+// Smart pause: pause music when user sends a message
+async function smartPause() {
+  // Check live state — don't rely on stale poll variable
+  try {
+    if (spotifyWebPlayer) {
+      const state = await spotifyWebPlayer.getCurrentState();
+      if (!state || state.paused) return; // not playing, nothing to pause
+      fabAutoPaused = true;
+      await spotifyWebPlayer.pause();
+    } else {
+      // Check via API if music is actually playing
+      const r = await fetch(`${API}/spotify/now-playing`, {headers:{'X-Session-Token':SESSION_TOKEN}});
+      const d = await r.json();
+      if (!d.is_playing) return; // not playing
+      fabAutoPaused = true;
+      await fetch(`${API}/spotify/pause`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+    }
+    document.getElementById('spotifyFabBtn').classList.add('paused');
+    document.getElementById('fabPlayBtn').textContent = '▶';
+    document.getElementById('fabBadge').classList.add('auto-paused');
+    document.getElementById('fabBadgeText').textContent = 'Paused — Mel is talking';
+  } catch(e) {}
+}
+
+// Smart resume: resume music after Mel finishes responding + TTS done
+async function smartResume() {
+  if (!fabAutoPaused) return;
+  fabAutoPaused = false;
+  // Wait for TTS/speech to finish before resuming
+  const waitForSpeech = () => new Promise(resolve => {
+    const check = () => {
+      if (!isSpeaking && !currentAudio) resolve();
+      else setTimeout(check, 300);
+    };
+    check();
+  });
+  try {
+    await Promise.race([waitForSpeech(), new Promise(r => setTimeout(r, 15000))]); // max 15s wait
+    await new Promise(r => setTimeout(r, 500)); // small buffer after speech ends
+    if (spotifyWebPlayer) await spotifyWebPlayer.resume();
+    else await fetch(`${API}/spotify/play`, {method:'POST', headers:{'X-Session-Token':SESSION_TOKEN}});
+    document.getElementById('spotifyFabBtn').classList.remove('paused');
+    document.getElementById('fabPlayBtn').textContent = '⏸';
+    fabMusicPlaying = true;
+    document.getElementById('fabBadge').classList.remove('auto-paused');
+    document.getElementById('fabBadgeText').textContent = 'Mel Dashboard';
+  } catch(e) {}
+}
+
+// Start polling for fab state
+function startFabPolling() {
+  if (fabPollTimer) return;
+  updateFabState();
+  fabPollTimer = setInterval(updateFabState, 4000);
+}
+
+// Init fab polling on page load
+setTimeout(startFabPolling, 3000);
 </script>
 </body>
 </html>

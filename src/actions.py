@@ -13,6 +13,18 @@ from typing import Optional
 
 import httpx
 
+
+def _load_secret(key: str, default: str = "") -> str:
+    """Load a secret from the encrypted vault; fall back to env var."""
+    try:
+        from security import SecretVault
+        val = SecretVault().get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
 logger = logging.getLogger("actions")
 
 
@@ -40,7 +52,7 @@ class CalendarPlugin:
             "GOOGLE_SERVICE_ACCOUNT_PATH",
             os.path.expanduser("~/.config/agent/google_service_account.json")
         )
-        self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        self.calendar_id = _load_secret("GOOGLE_CALENDAR_ID") or "primary"
 
         # OAuth2 (legacy fallback)
         self.credentials_path = os.getenv(
@@ -521,7 +533,7 @@ class GmailPlugin:
             "GOOGLE_GMAIL_TOKEN_PATH",
             os.path.expanduser("~/.config/agent/google_gmail_token.json")
         )
-        self.user_email = os.getenv("GMAIL_USER_EMAIL", "me")
+        self.user_email = _load_secret("GMAIL_USER_EMAIL", "me")
         self.service = None
 
     def authenticate(self):

@@ -859,11 +859,53 @@ async def spotify_next():
         raise HTTPException(status_code=503, detail="Spotify not available")
     return {"status": "ok", "message": await agent.spotify.next_track()}
 
+@app.post("/spotify/previous", dependencies=[Depends(require_api_key)])
+async def spotify_previous():
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.previous_track()}
+
 @app.get("/spotify/playlists", dependencies=[Depends(require_api_key)])
 async def spotify_playlists():
     if not agent.spotify:
         return {"playlists": []}
     return {"playlists": await agent.spotify.get_playlists()}
+
+@app.get("/spotify/token", dependencies=[Depends(require_api_key)])
+async def spotify_token():
+    """Return the current access token for the Web Playback SDK."""
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    token = await agent.spotify.auth.get_access_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="Spotify not authenticated")
+    return {"access_token": token}
+
+@app.get("/spotify/devices", dependencies=[Depends(require_api_key)])
+async def spotify_devices():
+    """List available Spotify devices."""
+    if not agent.spotify:
+        return {"devices": []}
+    return {"devices": await agent.spotify.get_devices()}
+
+@app.put("/spotify/transfer", dependencies=[Depends(require_api_key)])
+async def spotify_transfer(device_id: str = ""):
+    """Transfer playback to a specific device."""
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    result = await agent.spotify._api("PUT", "/me/player", json_body={"device_ids": [device_id], "play": True})
+    if result is not None:
+        return {"status": "ok", "message": "Playback transferred"}
+    return {"status": "error", "message": "Could not transfer playback"}
+
+@app.post("/spotify/register-device", dependencies=[Depends(require_api_key)])
+async def spotify_register_device(device_id: str = ""):
+    """Register the dashboard web player device ID so the backend prefers it."""
+    if agent.spotify and device_id:
+        agent.spotify.dashboard_device_id = device_id
+        logger.info(f"Dashboard Spotify device registered: {device_id}")
+        return {"status": "ok"}
+    return {"status": "error"}
 
 
 # ── Reminders / Scheduler ────────────────────

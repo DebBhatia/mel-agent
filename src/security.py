@@ -394,6 +394,11 @@ class NetworkGuard:
         "accounts.google.com",        # Google Auth
         "api.spotify.com",            # Spotify playback
         "accounts.spotify.com",       # Spotify auth
+        "sdk.scdn.co",                # Spotify Web Playback SDK
+        "ntfy.sh",                    # Push notifications (Ntfy)
+        "api.pushover.net",           # Push notifications (Pushover)
+        "api.telegram.org",           # Push notifications (Telegram)
+        "api.openweathermap.org",     # Weather data
         "localhost",                   # Local services
         "127.0.0.1",                  # Local
     ]
