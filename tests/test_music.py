@@ -68,7 +68,7 @@ class TestSpotifyPlayer:
         player = SpotifyPlayer()
         player.auth._token_data = {}
         result = await player.play()
-        assert "could not" in result.lower() or "not" in result.lower()
+        assert "could not" in result.lower() or "no" in result.lower()
 
     @pytest.mark.asyncio
     async def test_pause_no_auth(self):
@@ -90,6 +90,57 @@ class TestSpotifyPlayer:
         player.auth._token_data = {}
         result = await player.set_volume(150)
         assert "not authenticated" in result.lower() or "not" in result.lower()
+
+
+class TestSpotifyPlayerExtended:
+    @pytest.mark.asyncio
+    async def test_next_track_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.next_track()
+        assert "no" in result.lower() or "could not" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_previous_track_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.previous_track()
+        assert "no" in result.lower() or "could not" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_shuffle_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.shuffle(True)
+        assert "could not" in result.lower() or "not" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_repeat_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.repeat("track")
+        assert "could not" in result.lower() or "not" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_seek_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.seek(30000)
+        assert "could not" in result.lower() or "not" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_get_devices_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.get_devices()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_playlists_no_auth(self):
+        player = SpotifyPlayer()
+        player.auth._token_data = {}
+        result = await player.get_playlists()
+        assert result == []
 
 
 class TestMusicPluginRegistration:

@@ -113,6 +113,25 @@ class TestIntentClassifier:
         result = self.classifier._keyword_classify("tell me about quantum physics")
         assert result["category"] == "INFORMATION"
 
+    def test_casual_conversation_classified_as_information(self):
+        """Casual questions like 'how you doing' should classify as INFORMATION and go to Claude."""
+        casual = ["how you doing", "what's up", "how are you", "are you talkative"]
+        for phrase in casual:
+            result = self.classifier._keyword_classify(phrase)
+            assert result["category"] == "INFORMATION", f"'{phrase}' classified as {result['category']}, expected INFORMATION"
+
+    def test_music_classification(self):
+        result = self.classifier._keyword_classify("play some chill music")
+        assert result["category"] == "MUSIC"
+
+    def test_skip_classification(self):
+        result = self.classifier._keyword_classify("skip")
+        assert result["category"] == "MUSIC"
+
+    def test_pause_classification(self):
+        result = self.classifier._keyword_classify("pause")
+        assert result["category"] == "MUSIC"
+
     def test_safe_summary_truncates(self):
         long_input = "x" * 200
         summary = IntentClassifier._safe_summary(long_input)
@@ -217,3 +236,49 @@ class TestClaudeClient:
         client.api_key = ""
         result = await client.reason("test task")
         assert "not configured" in result.lower()
+
+    def test_mel_system_prompt_contains_persona(self):
+        client = ClaudeClient()
+        prompt = client._mel_system_prompt()
+        assert Config.AGENT_NAME in prompt
+        assert Config.USER_NAME in prompt
+        assert "casual" in prompt.lower() or "friend" in prompt.lower()
+
+
+# ── Conversational Fallback ──────────────────
+class TestConversationalFallback:
+    @pytest.mark.asyncio
+    async def test_greeting_fallback(self):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        # Force Claude to be unavailable
+        orch.claude.api_key = ""
+        result = await orch._conversational_fallback("how are you doing?")
+        assert result and len(result) > 0
+        # Should return a friendly greeting response
+        assert Config.USER_NAME in result or "great" in result.lower() or "doing" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_thanks_fallback(self):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        orch.claude.api_key = ""
+        result = await orch._conversational_fallback("thank you so much")
+        assert result and len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_goodbye_fallback(self):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        orch.claude.api_key = ""
+        result = await orch._conversational_fallback("bye see you later")
+        assert result and len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_unknown_fallback(self):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        orch.claude.api_key = ""
+        result = await orch._conversational_fallback("xyzzy random gibberish")
+        assert result and len(result) > 0
+        assert Config.USER_NAME in result

@@ -288,7 +288,11 @@ class SpotifyPlayer:
         return pick["id"]
 
     async def pause(self) -> str:
-        result = await self._api("PUT", "/me/player/pause")
+        device_id = await self._ensure_active_device()
+        endpoint = "/me/player/pause"
+        if device_id:
+            endpoint = f"/me/player/pause?device_id={device_id}"
+        result = await self._api("PUT", endpoint)
         if result is not None:
             return "Music paused."
         return "Could not pause. Is Spotify playing?"
@@ -297,7 +301,17 @@ class SpotifyPlayer:
         device_id = await self._ensure_active_device()
         if not device_id:
             return "No Spotify device found. Open Spotify or go to the Music page."
-        result = await self._api("POST", "/me/player/next")
+        # Pass device_id to target the correct device
+        result = await self._api("POST", f"/me/player/next?device_id={device_id}")
+        if result is not None:
+            await asyncio.sleep(0.5)
+            np = await self.now_playing()
+            if np.get("track"):
+                return f"Now playing: {np['track']} by {np['artist']}."
+            return "Skipped to next track."
+        # Retry once — Spotify API can be flaky
+        await asyncio.sleep(0.3)
+        result = await self._api("POST", f"/me/player/next?device_id={device_id}")
         if result is not None:
             await asyncio.sleep(0.5)
             np = await self.now_playing()
@@ -310,7 +324,17 @@ class SpotifyPlayer:
         device_id = await self._ensure_active_device()
         if not device_id:
             return "No Spotify device found. Open Spotify or go to the Music page."
-        result = await self._api("POST", "/me/player/previous")
+        # Pass device_id to target the correct device
+        result = await self._api("POST", f"/me/player/previous?device_id={device_id}")
+        if result is not None:
+            await asyncio.sleep(0.5)
+            np = await self.now_playing()
+            if np.get("track"):
+                return f"Now playing: {np['track']} by {np['artist']}."
+            return "Playing previous track."
+        # Retry once
+        await asyncio.sleep(0.3)
+        result = await self._api("POST", f"/me/player/previous?device_id={device_id}")
         if result is not None:
             await asyncio.sleep(0.5)
             np = await self.now_playing()
@@ -336,6 +360,37 @@ class SpotifyPlayer:
         except Exception:
             pass
         return "Could not set volume."
+
+    async def shuffle(self, state: bool = True) -> str:
+        device_id = await self._ensure_active_device()
+        endpoint = f"/me/player/shuffle?state={'true' if state else 'false'}"
+        if device_id:
+            endpoint += f"&device_id={device_id}"
+        result = await self._api("PUT", endpoint)
+        if result is not None:
+            return f"Shuffle {'on' if state else 'off'}."
+        return "Could not toggle shuffle."
+
+    async def repeat(self, state: str = "context") -> str:
+        """Set repeat mode: 'track', 'context' (playlist/album), or 'off'."""
+        device_id = await self._ensure_active_device()
+        endpoint = f"/me/player/repeat?state={state}"
+        if device_id:
+            endpoint += f"&device_id={device_id}"
+        result = await self._api("PUT", endpoint)
+        if result is not None:
+            return f"Repeat set to {state}."
+        return "Could not set repeat mode."
+
+    async def seek(self, position_ms: int) -> str:
+        device_id = await self._ensure_active_device()
+        endpoint = f"/me/player/seek?position_ms={position_ms}"
+        if device_id:
+            endpoint += f"&device_id={device_id}"
+        result = await self._api("PUT", endpoint)
+        if result is not None:
+            return "Seeking..."
+        return "Could not seek."
 
     async def search(self, query: str, search_type: str = "track", limit: int = 5) -> list[dict]:
         data = await self._api("GET", "/search", params={"q": query, "type": search_type, "limit": limit})

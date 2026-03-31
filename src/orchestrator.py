@@ -521,6 +521,16 @@ class ClaudeClient:
                     headers=headers,
                     json=payload,
                 ) as response:
+                    # Check for HTTP errors before trying to read the stream
+                    if response.status_code != 200:
+                        body = ""
+                        async for chunk in response.aiter_bytes():
+                            body += chunk.decode("utf-8", errors="replace")
+                            if len(body) > 500:
+                                break
+                        logger.error(f"Claude stream HTTP {response.status_code}: {body[:300]}")
+                        return  # Yield nothing — let orchestrator use fallback
+
                     full_response = ""
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
@@ -531,13 +541,16 @@ class ClaudeClient:
                                     if text:
                                         full_response += text
                                         yield text
+                                elif data.get("type") == "error":
+                                    logger.error(f"Claude stream error event: {data}")
                             except json.JSONDecodeError:
                                 continue
                     # Update history after stream completes (sanitized text only)
-                    self._update_converse_history(content, full_response)
+                    if full_response:
+                        self._update_converse_history(content, full_response)
         except Exception as e:
             logger.error(f"Claude stream error: {e}")
-            yield "I'm having trouble reaching my cloud brain right now. Try again in a moment."
+            # Don't yield an error message — let the orchestrator fallback handle it
 
     async def reason(self, task_description: str, context: str = "") -> str:
         """Send sanitized request to Claude for complex reasoning / planning."""
@@ -904,6 +917,11 @@ class AgentOrchestrator:
             # Default: Claude with full Mel persona — handles all general conversation,
             # personal questions, information queries, small talk, etc.
             response = await self.claude.converse(user_input)
+            # If Claude returned empty or errored, use fallback
+            if (not response or not response.strip()
+                    or "trouble reaching" in response.lower()
+                    or "not configured" in response.lower()):
+                response = await self._conversational_fallback(user_input)
 
         # Store conversation in knowledge base
         if self.knowledge and response:
@@ -983,9 +1001,19 @@ class AgentOrchestrator:
 
         # Claude-backed categories — stream token-by-token
         full_response = ""
-        async for token in self.claude.converse_stream(user_input):
-            full_response += token
-            yield token
+        try:
+            async for token in self.claude.converse_stream(user_input):
+                full_response += token
+                yield token
+        except Exception as e:
+            logger.error(f"Stream failed: {e}")
+
+        # If Claude returned nothing, generate a local fallback response
+        if not full_response.strip():
+            logger.warning("Claude stream returned empty — using fallback")
+            fallback = await self._conversational_fallback(user_input)
+            full_response = fallback
+            yield fallback
 
         # Store conversation in knowledge base
         if self.knowledge and full_response:
@@ -993,6 +1021,62 @@ class AgentOrchestrator:
                 self.knowledge.store_conversation(user_input, full_response[:500])
             except Exception:
                 pass
+
+    # ─────────────────────────────────────────────
+    # Conversational Fallback
+    # ─────────────────────────────────────────────
+    async def _conversational_fallback(self, user_input: str) -> str:
+        """Generate a response when Claude streaming fails or returns empty.
+        Tries non-streaming Claude first, then Ollama, then a hardcoded response."""
+        # Try non-streaming Claude
+        try:
+            response = await self.claude.converse(user_input)
+            if (response and response.strip()
+                    and "trouble reaching" not in response.lower()
+                    and "not configured" not in response.lower()):
+                return response
+        except Exception as e:
+            logger.warning(f"Claude non-stream fallback failed: {e}")
+
+        # Try local Ollama
+        try:
+            if await self.ollama.is_available():
+                response = await self.ollama.chat(
+                    user_input,
+                    system_prompt=(
+                        f"You are {Config.AGENT_NAME}, {Config.USER_NAME}'s personal assistant. "
+                        "Be casual, friendly, direct. Keep responses to 1-3 sentences. "
+                        "Sound like a person texting, not a help desk."
+                    )
+                )
+                if response and "unavailable" not in response.lower():
+                    return response
+        except Exception as e:
+            logger.warning(f"Ollama fallback failed: {e}")
+
+        # Last resort: pattern-matched casual responses
+        _inp = user_input.lower().strip()
+        greetings = ["how are you", "how you doing", "how's it going", "what's up",
+                     "how do you do", "how have you been", "how're you", "sup",
+                     "what's good", "how goes it", "how are things"]
+        if any(g in _inp for g in greetings):
+            return f"I'm doing great, {Config.USER_NAME}! What can I help you with?"
+
+        compliments = ["you're awesome", "you're great", "good job", "nice work",
+                       "thank you", "thanks", "appreciate", "you rock"]
+        if any(c in _inp for c in compliments):
+            return f"Thanks, {Config.USER_NAME}! Always happy to help."
+
+        farewells = ["bye", "goodbye", "see you", "good night", "later", "peace out"]
+        if any(f in _inp for f in farewells):
+            return f"Later, {Config.USER_NAME}! I'll be here whenever you need me."
+
+        opinions = ["what do you think", "your opinion", "thoughts on",
+                    "are you", "do you like", "do you think"]
+        if any(o in _inp for o in opinions):
+            return "Honestly, that's a great question. Let me think on that — ask me again in a sec?"
+
+        return f"Hey {Config.USER_NAME}, I caught that but my brain's a bit foggy right now. Mind rephrasing?"
 
     # ─────────────────────────────────────────────
     # CALENDAR Handler - Book appointments & events

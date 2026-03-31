@@ -898,6 +898,32 @@ async def spotify_transfer(device_id: str = ""):
         return {"status": "ok", "message": "Playback transferred"}
     return {"status": "error", "message": "Could not transfer playback"}
 
+@app.put("/spotify/shuffle", dependencies=[Depends(require_api_key)])
+async def spotify_shuffle(state: bool = True):
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.shuffle(state)}
+
+@app.put("/spotify/repeat", dependencies=[Depends(require_api_key)])
+async def spotify_repeat(state: str = "context"):
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    if state not in ("track", "context", "off"):
+        raise HTTPException(status_code=400, detail="state must be track, context, or off")
+    return {"status": "ok", "message": await agent.spotify.repeat(state)}
+
+@app.put("/spotify/volume", dependencies=[Depends(require_api_key)])
+async def spotify_volume(volume: int = 50):
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.set_volume(volume)}
+
+@app.put("/spotify/seek", dependencies=[Depends(require_api_key)])
+async def spotify_seek(position_ms: int = 0):
+    if not agent.spotify:
+        raise HTTPException(status_code=503, detail="Spotify not available")
+    return {"status": "ok", "message": await agent.spotify.seek(position_ms)}
+
 @app.post("/spotify/register-device", dependencies=[Depends(require_api_key)])
 async def spotify_register_device(device_id: str = ""):
     """Register the dashboard web player device ID so the backend prefers it."""
