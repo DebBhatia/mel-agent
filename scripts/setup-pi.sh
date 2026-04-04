@@ -114,21 +114,45 @@ echo ""
 echo "================================================"
 echo "  Setup complete!"
 echo "================================================"
+
+# Test server connectivity if ORCHESTRATOR_URL is already set
+if [ -f "$REPO_DIR/.env" ]; then
+    source "$REPO_DIR/.env" 2>/dev/null || true
+    if [ -n "$ORCHESTRATOR_URL" ] && [ "$ORCHESTRATOR_URL" != "http://YOUR_SERVER_IP:8000" ]; then
+        echo ""
+        echo "Testing connectivity to $ORCHESTRATOR_URL ..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$ORCHESTRATOR_URL/health" 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" = "200" ]; then
+            echo "  ✓ Server is reachable (HTTP $HTTP_CODE)"
+            # Test API key
+            PI_STATUS=$(curl -s --connect-timeout 5 "$ORCHESTRATOR_URL/health/pi" -H "X-API-Key: $AGENT_API_KEY" 2>/dev/null || echo '{}')
+            echo "  Pi diagnostics: $PI_STATUS"
+        else
+            echo "  ✗ Server NOT reachable (HTTP $HTTP_CODE)"
+            echo "    Check: Is the Mel server running? Is port 8000 open in Windows Firewall?"
+            echo "    Run on Windows: netsh advfirewall firewall add rule name='Mel' dir=in action=allow protocol=TCP localport=8000"
+        fi
+    fi
+fi
+
 echo ""
 echo "Next steps:"
 echo "  1. Edit your .env:  nano $REPO_DIR/.env"
-echo "     - Set ORCHESTRATOR_URL to your server IP"
+echo "     - Set ORCHESTRATOR_URL=http://YOUR_WINDOWS_IP:8000"
 echo "     - Set AGENT_API_KEY from your server's .env"
+echo "     - Set PICOVOICE_ACCESS_KEY (free at https://console.picovoice.ai/)"
 echo ""
-echo "  2. Test the mic:    arecord -d 3 test.wav && aplay test.wav"
+echo "  2. Test connectivity: curl http://YOUR_SERVER_IP:8000/health/pi"
 echo ""
-echo "  3. Test the listener:"
+echo "  3. Test the mic:    arecord -d 3 test.wav && aplay test.wav"
+echo ""
+echo "  4. Test the listener:"
 echo "     cd $REPO_DIR/src && ../venv/bin/python wake_listener.py"
 echo ""
-echo "  4. Enable auto-start on boot:"
+echo "  5. Enable auto-start on boot:"
 echo "     sudo systemctl enable mel-listener"
 echo "     sudo systemctl start mel-listener"
 echo ""
-echo "  5. Check logs:"
+echo "  6. Check logs:"
 echo "     journalctl -u mel-listener -f"
 echo ""

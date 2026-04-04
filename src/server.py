@@ -1230,6 +1230,211 @@ async def health_check_v2():
     }
 
 
+# ── Homecoming ───────────────────────────────
+class HomecomeingResponse(BaseModel):
+    speech: str
+    weather: dict = {}
+    calendar: list = []
+    news_url: str = ""
+    stocks_url: str = ""
+
+
+@app.post("/homecoming", dependencies=[Depends(require_api_key)])
+async def homecoming():
+    """Full homecoming sequence: greet, weather with advice, calendar, open browser tabs.
+    Called by the Raspberry Pi (or keyboard mode) when 'wake up daddy's home' is detected.
+    Browser opens happen server-side (Windows machine).
+    """
+    import subprocess
+    import platform
+    from weather import WeatherService
+
+    user_name = Config.USER_NAME
+    now = datetime.now()
+    hour = now.hour
+
+    # 1. Time-appropriate greeting
+    if 5 <= hour < 12:
+        greeting = f"Good morning {user_name},"
+    elif 12 <= hour < 17:
+        greeting = f"Good afternoon {user_name},"
+    elif 17 <= hour < 21:
+        greeting = f"Good evening {user_name}, welcome home."
+    else:
+        greeting = f"Hey {user_name}, burning the midnight oil I see."
+
+    speech_parts = [greeting]
+    weather_data = {}
+
+    # 2. Weather with smart advice
+    if agent.weather and agent.weather.is_configured():
+        try:
+            current = await agent.weather.get_current()
+            if "error" not in current:
+                weather_data = current
+                unit = current["unit_symbol"]
+                temp = current["temperature"]
+                desc = current["description"]
+                speech_parts.append(
+                    f"Outside it's {temp}{unit} and {desc.lower()}."
+                )
+                # Smart contextual advice
+                advice = WeatherService.get_weather_advice(temp, desc, agent.weather.units)
+                if advice:
+                    speech_parts.append(advice)
+        except Exception as e:
+            logger.warning(f"Homecoming weather fetch failed: {e}")
+
+    # 3. Calendar briefing
+    calendar_events = []
+    if agent.actions and "calendar_list" in agent.actions.actions:
+        try:
+            result = await agent.actions.execute("calendar_list", {"days": 1})
+            if result and not result.startswith(("No upcoming", "Calendar not", "Failed")):
+                speech_parts.append(f"Here's your schedule for today. {result}")
+                # Try to parse events for the response payload
+                calendar_events = [{"summary": result}]
+            else:
+                speech_parts.append("You have a clear schedule today.")
+        except Exception as e:
+            logger.warning(f"Homecoming calendar fetch failed: {e}")
+
+    # 4. Personal context note from about-me/priorities.md
+    try:
+        import journal as _journal_mod
+        priorities_path = _journal_mod.ABOUT_ME_DIR / "priorities.md"
+        if priorities_path.exists():
+            content = priorities_path.read_text(encoding="utf-8").strip()
+            # Only include if user has filled it in (placeholder lines have "[")
+            if content and content.count("[") < 3:
+                speech_parts.append("Based on your notes, here's what's on your plate this week.")
+    except Exception:
+        pass
+
+    # 5. Open browser tabs (server-side, Windows)
+    news_url = os.getenv("NEWS_URL", "https://news.google.com")
+    stocks_url = os.getenv("STOCKS_URL", "https://finance.yahoo.com")
+
+    def _open_url(url: str):
+        """Open URL in default browser (cross-platform)."""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            elif system == "Darwin":
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+        except Exception as ex:
+            logger.warning(f"Could not open browser for {url}: {ex}")
+
+    _open_url(news_url)
+    _open_url(stocks_url)
+
+    speech_parts.append("I've opened today's news and markets for you.")
+    speech_parts.append("What can I do for you?")
+
+    full_speech = " ".join(speech_parts)
+
+    return {
+        "speech": full_speech,
+        "weather": weather_data,
+        "calendar": calendar_events,
+        "news_url": news_url,
+        "stocks_url": stocks_url,
+    }
+
+
+# ── Web Search ───────────────────────────────
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=20)
+    news: bool = Field(default=False)
+
+
+@app.post("/search", dependencies=[Depends(require_api_key)])
+async def web_search(request: SearchRequest):
+    """Search the web via DuckDuckGo. Free, no API key required."""
+    try:
+        from search import WebSearch
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Search module not available")
+
+    if request.news:
+        results = await WebSearch.news_search(request.query, max_results=request.max_results)
+    else:
+        results = await WebSearch.search(request.query, max_results=request.max_results)
+
+    return {"query": request.query, "results": results, "count": len(results)}
+
+
+# ── About-Me Folder ───────────────────────────
+class NoteRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=5000)
+    file: str = Field(default="notes.md", max_length=50)
+
+
+@app.get("/about-me", dependencies=[Depends(require_api_key)])
+async def get_about_me():
+    """Return all about-me context files as JSON."""
+    try:
+        from journal import AboutMe
+        return {
+            "context": AboutMe.load_all(),
+            "files": AboutMe.list_files(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/about-me/note", dependencies=[Depends(require_api_key)])
+async def add_about_me_note(request: NoteRequest):
+    """Append a timestamped note to a file in data/about-me/."""
+    try:
+        from journal import AboutMe
+        ok = AboutMe.append_note(request.text, request.file)
+        if ok:
+            return {"status": "ok", "message": f"Note saved to {request.file}"}
+        raise HTTPException(status_code=500, detail="Could not save note")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Pi Diagnostics ───────────────────────────
+@app.get("/health/pi")
+async def health_pi(request: Request, api_key: Optional[str] = None):
+    """Raspberry Pi connectivity diagnostic. Tests API key, server reachability, and services.
+    Can be called without auth to check if server is reachable; auth check is explicit.
+    Usage from Pi: curl http://SERVER_IP:8000/health/pi -H 'X-API-Key: your-key'
+    """
+    # Validate API key if provided
+    provided_key = api_key or request.headers.get("x-api-key") or request.headers.get("authorization", "").replace("Bearer ", "")
+    auth_ok = provided_key == AGENT_API_KEY
+
+    server_ip = request.headers.get("host", "unknown")
+
+    return {
+        "status": "reachable",
+        "server": server_ip,
+        "api_key_valid": auth_ok,
+        "api_key_hint": "Provide X-API-Key or Authorization: Bearer <key>" if not auth_ok else "✓ Valid",
+        "agent_name": Config.AGENT_NAME,
+        "services": {
+            "weather": "configured" if (agent.weather and agent.weather.is_configured()) else "not configured",
+            "calendar": "ready" if (agent.actions and "calendar_list" in agent.actions.actions) else "not configured",
+            "spotify": "connected" if (agent.spotify and hasattr(agent.spotify, 'auth') and agent.spotify.auth.is_authenticated) else "not connected",
+        },
+        "timestamp": datetime.now().isoformat(),
+        "next_steps": [] if auth_ok else [
+            "Set ORCHESTRATOR_URL=http://" + server_ip + " in Pi .env",
+            "Set AGENT_API_KEY to match server .env",
+            "Set PICOVOICE_ACCESS_KEY (free at console.picovoice.ai)",
+        ],
+    }
+
+
 # ── Global error handler — never leak internals ──
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

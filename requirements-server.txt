@@ -24,3 +24,9 @@ chromadb>=0.5.0
 # For MQTT support (optional): paho-mqtt>=2.0.0
 
 # Scheduler (no external deps — lightweight built-in scheduler)
+
+# Web Search (free DuckDuckGo search, no API key needed)
+duckduckgo-search>=6.0.0
+
+# Timezone support for Mel's system prompt
+pytz>=2024.0
