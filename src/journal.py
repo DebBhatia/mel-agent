@@ -28,6 +28,11 @@ logger = logging.getLogger("journal")
 # Resolve path relative to this file's location (src/ → data/about-me/)
 _SRC_DIR = Path(__file__).parent
 ABOUT_ME_DIR = _SRC_DIR.parent / "data" / "about-me"
+
+
+def get_about_me_context() -> str:
+    """Module-level convenience wrapper for AboutMe.load_all()."""
+    return AboutMe.load_all()
 NOTES_FILE = ABOUT_ME_DIR / "notes.md"
 
 

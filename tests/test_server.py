@@ -41,14 +41,12 @@ def bad_auth_headers():
 
 class TestAuth:
     @pytest.mark.asyncio
-    async def test_health_no_auth_required(self):
+    async def test_health_requires_auth(self):
+        """Health endpoint now requires auth (security hardening)."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/health")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "online"
-            assert "agent_name" in data
+            assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_protected_endpoint_requires_auth(self):
@@ -73,11 +71,12 @@ class TestAuth:
             assert resp.status_code != 401
 
     @pytest.mark.asyncio
-    async def test_query_param_auth(self):
+    async def test_query_param_auth_disabled(self):
+        """Query-param auth was intentionally removed (logs keys in plaintext)."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get(f"/health/detail?api_key={AGENT_API_KEY}")
-            assert resp.status_code != 401
+            assert resp.status_code == 401  # Should NOT work
 
     @pytest.mark.asyncio
     async def test_bad_auth_rejected(self, bad_auth_headers):
@@ -102,7 +101,8 @@ class TestInputValidation:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/process", json={"input": "x" * 5001}, headers=auth_headers)
-            assert resp.status_code == 400
+            # Pydantic validates max_length=5000 and returns 422, server also checks for 400
+            assert resp.status_code in (400, 422)
 
 
 # ── Utility Function Tests ────────────────────
