@@ -10,6 +10,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/vanilla-tilt.js@1.8.1/dist/vanilla-tilt.min.js"></script>
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 
 <style>
 /* ========== CSS Variables ========== */
@@ -609,6 +610,7 @@ body {
         <div class="msg mel">Hello! I'm MEL, your executive lifeform. How can I help you today?</div>
       </div>
       <div class="chat-input-bar">
+        <button id="tts-toggle" onclick="ttsMuted=!ttsMuted;this.textContent=ttsMuted?'\uD83D\uDD07':'\uD83D\uDD0A';this.title=ttsMuted?'Unmute voice':'Mute voice'" title="Mute voice" style="background:transparent;border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:0.5rem 0.75rem;color:var(--text);cursor:pointer;font-size:1.1rem">&#128266;</button>
         <input type="text" id="chat-input" placeholder="Ask MEL anything…" autocomplete="off">
         <button id="chat-send" onclick="sendMessage()">Send</button>
       </div>
@@ -863,6 +865,7 @@ function connectWS() {
         break;
       case 'reminder':
         showToast('\uD83D\uDD14 ' + data.data.title, 'success');
+        speakText('Reminder: ' + data.data.title);
         loadReminders();
         break;
       case 'pong':
@@ -877,6 +880,103 @@ function pingLoop() {
       ws.send(JSON.stringify({ type: 'ping' }));
     }
   }, 25000);
+}
+
+// ── TTS (Text-to-Speech) ────────────────────────────────────────────
+let ttsEnabled = false;
+let ttsAudio = null;
+let ttsMuted = false;
+
+async function checkTTS() {
+  try {
+    var res = await fetch(API + '/tts/config', { headers: authHeaders() });
+    if (res.ok) {
+      var d = await res.json();
+      ttsEnabled = !!(d.enabled || d.configured || d.api_key);
+    }
+  } catch (e) { ttsEnabled = false; }
+}
+
+async function speakText(text) {
+  if (!ttsEnabled || ttsMuted || !text) return;
+  // Stop any currently playing audio
+  if (ttsAudio) {
+    ttsAudio.pause();
+    ttsAudio = null;
+  }
+  setOrbState('speaking');
+  try {
+    var res = await fetch(API + '/tts', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ text: text })
+    });
+    if (!res.ok) { setOrbState('idle'); return; }
+    var blob = await res.blob();
+    var url = URL.createObjectURL(blob);
+    ttsAudio = new Audio(url);
+    ttsAudio.onended = function() {
+      setOrbState('idle');
+      URL.revokeObjectURL(url);
+      ttsAudio = null;
+    };
+    ttsAudio.onerror = function() {
+      setOrbState('idle');
+      URL.revokeObjectURL(url);
+      ttsAudio = null;
+    };
+    await ttsAudio.play();
+  } catch (e) {
+    setOrbState('idle');
+  }
+}
+
+// ── Homecoming Detection ────────────────────────────────────────────
+const WAKE_VARIANTS = [
+  'wake up daddy is home', 'wake up daddy\'s home', 'wake up daddys home',
+  'daddy\'s home', 'daddy is home', 'daddys home'
+];
+
+function isHomecoming(text) {
+  var lower = text.toLowerCase();
+  return WAKE_VARIANTS.some(function(v) { return lower.indexOf(v) !== -1; });
+}
+
+async function handleHomecoming() {
+  try {
+    var res = await fetch(API + '/homecoming', {
+      method: 'POST',
+      headers: authHeaders()
+    });
+    if (!res.ok) throw new Error();
+    var d = await res.json();
+    var speech = d.speech || 'Welcome home!';
+    appendMsg(speech, 'mel');
+    speakText(speech);
+
+    // Update weather card if homecoming returned weather data
+    if (d.weather) {
+      var tempEl = document.getElementById('weather-temp');
+      var descEl = document.getElementById('weather-desc');
+      if (tempEl) tempEl.textContent = Math.round(d.weather.temperature || d.weather.temp || 0) + '\u00B0';
+      if (descEl) descEl.textContent = d.weather.description || d.weather.condition || '';
+    }
+    // Refresh calendar if events came back
+    if (d.calendar && d.calendar.length > 0) {
+      loadCalendar();
+    }
+  } catch (e) {
+    // Fallback to normal /process
+    var res2 = await fetch(API + '/process', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ input: 'wake up daddy is home' })
+    });
+    var data = await res2.json();
+    var resp = data.response || 'Welcome home!';
+    appendMsg(resp, 'mel');
+    speakText(resp);
+  }
 }
 
 // ── Chat ─────────────────────────────────────────────────────────────
@@ -899,6 +999,13 @@ async function sendMessage() {
   appendMsg(text, 'user');
   setOrbState('thinking');
 
+  // Check if this is a homecoming phrase
+  if (isHomecoming(text)) {
+    await handleHomecoming();
+    setOrbState('idle');
+    return;
+  }
+
   try {
     var res = await fetch(API + '/process', {
       method: 'POST',
@@ -906,7 +1013,9 @@ async function sendMessage() {
       body: JSON.stringify({ input: text })
     });
     var data = await res.json();
-    appendMsg(data.response || data.detail || 'No response', 'mel');
+    var response = data.response || data.detail || 'No response';
+    appendMsg(response, 'mel');
+    speakText(response);
   } catch (err) {
     appendMsg('Connection error. Please try again.', 'mel');
   }
@@ -1085,10 +1194,66 @@ async function runRoutine(id) {
   }
 }
 
+// ── Spotify Web Playback SDK ────────────────────────────────────────
+let spotifyPlayer = null;
+let spotifyDeviceId = null;
+
+window.onSpotifyWebPlaybackSDKReady = function() {
+  console.log('Spotify SDK ready, fetching token...');
+  initSpotifyPlayer();
+};
+
+async function initSpotifyPlayer() {
+  try {
+    var res = await fetch(API + '/spotify/token', { headers: authHeaders() });
+    if (!res.ok) { console.log('No Spotify token available'); return; }
+    var d = await res.json();
+    var token = d.access_token || d.token;
+    if (!token) return;
+
+    spotifyPlayer = new Spotify.Player({
+      name: 'MEL Dashboard',
+      getOAuthToken: function(cb) { cb(token); },
+      volume: 0.5
+    });
+
+    spotifyPlayer.addListener('ready', function(data) {
+      spotifyDeviceId = data.device_id;
+      console.log('Spotify player ready, device:', spotifyDeviceId);
+      // Register this device with the server so it becomes preferred
+      fetch(API + '/spotify/register-device', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ device_id: spotifyDeviceId })
+      }).catch(function() {});
+    });
+
+    spotifyPlayer.addListener('not_ready', function() {
+      console.log('Spotify device went offline');
+      spotifyDeviceId = null;
+    });
+
+    spotifyPlayer.addListener('player_state_changed', function(state) {
+      if (!state) return;
+      var track = state.track_window.current_track;
+      if (track) {
+        showToast('Now playing: ' + track.name + ' - ' + track.artists[0].name, 'success');
+      }
+    });
+
+    spotifyPlayer.connect();
+  } catch (e) {
+    console.log('Spotify init error:', e);
+  }
+}
+
 // ── Init ─────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {
   // Initialize Three.js orb
   initOrb();
+
+  // Check TTS availability
+  checkTTS();
 
   // Bind chat input
   var chatInput = document.getElementById('chat-input');
@@ -1114,6 +1279,11 @@ document.addEventListener('DOMContentLoaded', function() {
   setInterval(loadCalendar, 600000);
   setInterval(loadTasks, 120000);
   setInterval(loadReminders, 60000);
+
+  // Refresh Spotify token every 50 minutes (tokens expire in 60)
+  setInterval(function() {
+    if (spotifyPlayer) initSpotifyPlayer();
+  }, 3000000);
 });
 </script>
 </body></html>
