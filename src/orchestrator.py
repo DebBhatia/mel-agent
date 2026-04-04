@@ -178,7 +178,7 @@ User request: """
 
                 valid_categories = ["CALENDAR", "RESERVATION", "INFORMATION", "COMMUNICATION", "EMAIL",
                                     "HOME", "MUSIC", "REMINDER", "WEATHER", "ROUTINE", "NOTIFICATION",
-                                    "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE", "DESIGN"]
+                                    "PERSONAL", "SYSTEM", "CODE", "DEVOPS", "KNOWLEDGE", "DESIGN", "SEARCH"]
                 if parsed and isinstance(parsed, dict) and parsed.get("category", "").upper() in valid_categories:
                     parsed["category"] = parsed["category"].upper()
                     return parsed
@@ -209,8 +209,18 @@ User request: """
         elif any(kw in text for kw in ["send notification", "notify me", "push alert", "send alert",
                                         "push notification"]):
             return {"category": "NOTIFICATION", "intent": "send", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget"]):
+        elif any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget",
+                                        "add a note", "make a note", "write this down", "jot this down"]):
             return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["search for", "search the web", "look up", "google that", "google this",
+                                        "find on the internet", "find online", "web search", "browse for",
+                                        "search online", "look it up", "look that up"]):
+            return {"category": "SEARCH", "intent": "web_search", "requires_cloud": False, "summary": summary}
+        elif any(kw in text for kw in ["open news", "show me the news", "show news", "open the news",
+                                        "open stocks", "show stocks", "open the market", "show the market",
+                                        "open stock market", "open my stocks", "check my stocks",
+                                        "show me stocks", "open finance", "open yahoo finance"]):
+            return {"category": "SEARCH", "intent": "open_browser", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["my name", "my address", "my phone", "about me", "personal"]):
             return {"category": "PERSONAL", "intent": "query", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["recall", "what did i", "do you remember"]):
@@ -422,6 +432,17 @@ class ClaudeClient:
         except Exception:
             now = datetime.now()
         time_str = now.strftime("%I:%M %p on %A, %B %d, %Y %Z").lstrip("0")
+
+        # Load personal context from about-me folder (silent fail if not available)
+        about_me_context = ""
+        try:
+            from journal import AboutMe
+            about_me_text = AboutMe.get_summary()
+            if about_me_text:
+                about_me_context = f"\n\n## What you know about {Config.USER_NAME}:\n{about_me_text}"
+        except Exception:
+            pass
+
         return (
             f"You are {Config.AGENT_NAME}, {Config.USER_NAME}'s personal assistant. "
             f"You talk like a close friend who happens to know everything — direct, casual, no fluff. "
@@ -437,8 +458,11 @@ class ClaudeClient:
             f"\n- NEVER invent personal details, names, events, plans, or facts about the user's life that you don't actually know. If you don't know, just don't mention it."
             f"\n- Only reference calendar events, reminders, or personal info if it was explicitly provided to you in this conversation."
             f"\n- Never list possible concerns unless asked. Just answer the actual question."
+            f"\n- Humor: NEVER tell the same joke twice in a session. Vary your style every single time — try puns, dry wit, observational humor, self-deprecating AI jokes, dark comedy, one-liners, wordplay. Never default to 'Why don't scientists trust atoms?' — that joke is banned."
+            f"\n- Variety: never start two consecutive responses the same way. Mix it up naturally — sometimes dive straight in, sometimes 'Honestly,', 'Nah,', 'Yeah,', 'So,', 'Look,' or nothing at all. Sound like a real person, not a bot."
             f"\n\nExample of BAD response: 'I'd be happy to help! Could you tell me your dietary restrictions? Are you concerned about sodium, allergens, or medication interactions?'"
             f"\nExample of GOOD response: 'Yeah totally fine — cocktail peanuts and beer are a classic combo. Just watch the sodium if you're having a bunch, but one serving won't hurt you.'"
+            f"{about_me_context}"
         )
 
     def _prepare_converse(self, user_message: str, extra_context: str = ""):
@@ -529,7 +553,8 @@ class ClaudeClient:
                             if len(body) > 500:
                                 break
                         logger.error(f"Claude stream HTTP {response.status_code}: {body[:300]}")
-                        return  # Yield nothing — let orchestrator use fallback
+                        yield f"Hmm, something went sideways on my end ({response.status_code}). Try again in a sec?"
+                        return
 
                     full_response = ""
                     async for line in response.aiter_lines():
@@ -910,6 +935,9 @@ class AgentOrchestrator:
         elif category == "DESIGN":
             response = await self._handle_design(user_input, classification)
 
+        elif category == "SEARCH":
+            response = await self._handle_search(user_input, classification)
+
         elif category in ["RESERVATION", "COMMUNICATION"]:
             response = await self.claude.converse(user_input)
 
@@ -993,7 +1021,7 @@ class AgentOrchestrator:
             return
 
         # Action categories — instant results, yield full response
-        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "EMAIL", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION"}
+        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "EMAIL", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION", "SEARCH"}
         if category in INSTANT_CATEGORIES:
             response = await self.process(user_input)
             yield response
@@ -1076,7 +1104,16 @@ class AgentOrchestrator:
         if any(o in _inp for o in opinions):
             return "Honestly, that's a great question. Let me think on that — ask me again in a sec?"
 
-        return f"Hey {Config.USER_NAME}, I caught that but my brain's a bit foggy right now. Mind rephrasing?"
+        import random
+        last_resorts = [
+            f"Caught that, {Config.USER_NAME} — but I'm drawing a blank on this one. Try rewording it?",
+            f"Hmm, I'm not sure what to do with that. Give me a different angle?",
+            f"That one slipped past me. Want to rephrase and try again?",
+            f"Nah, I got nothing on that. Hit me with it a different way.",
+            f"I hear you, {Config.USER_NAME}, but I need a bit more to work with — try again?",
+            f"Honestly, that one stumped me. Different wording might help.",
+        ]
+        return random.choice(last_resorts)
 
     # ─────────────────────────────────────────────
     # CALENDAR Handler - Book appointments & events
@@ -1665,6 +1702,86 @@ Request: {summary}"""
             return "DevOps processing error. Check logs for details."
 
     # ─────────────────────────────────────────────
+    # SEARCH Handler - Web search via DuckDuckGo
+    # ─────────────────────────────────────────────
+    async def _handle_search(self, user_input: str, classification: dict) -> str:
+        """Handle web search requests and browser-open commands."""
+        intent = classification.get("intent", "")
+
+        # Browser-open commands (open news, stocks, etc.)
+        if intent == "open_browser":
+            import subprocess
+            import platform
+            text = user_input.lower()
+            opened = []
+
+            def _open(url: str):
+                try:
+                    system = platform.system()
+                    if system == "Windows":
+                        subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+                    elif system == "Darwin":
+                        subprocess.Popen(["open", url])
+                    else:
+                        subprocess.Popen(["xdg-open", url])
+                except Exception as ex:
+                    logger.warning(f"Could not open {url}: {ex}")
+
+            news_url = os.getenv("NEWS_URL", "https://news.google.com")
+            stocks_url = os.getenv("STOCKS_URL", "https://finance.yahoo.com")
+
+            if any(w in text for w in ["news", "headlines"]):
+                _open(news_url)
+                opened.append("news")
+            if any(w in text for w in ["stock", "market", "finance"]):
+                _open(stocks_url)
+                opened.append("stocks")
+            if not opened:
+                _open(news_url)
+                opened.append("news")
+
+            return f"Opened {' and '.join(opened)} for you."
+
+        try:
+            from search import WebSearch
+        except ImportError:
+            # Fall back to Claude for search-like questions
+            return await self.claude.converse(user_input)
+
+        # Extract the search query (strip "search for", "look up" prefixes)
+        query = user_input
+        import re
+        prefixes = [
+            r"^search\s+(for\s+|the\s+web\s+for\s+|online\s+for\s+)?",
+            r"^look\s+up\s+",
+            r"^google\s+(that|this|\s+)?",
+            r"^find\s+(on\s+the\s+internet\s+|online\s+)?",
+            r"^web\s+search\s+(for\s+)?",
+            r"^browse\s+for\s+",
+            r"^search\s+online\s+for\s+",
+            r"^look\s+that\s+up[:\s]*",
+            r"^look\s+it\s+up[:\s]*",
+        ]
+        for p in prefixes:
+            cleaned = re.sub(p, "", query.strip(), flags=re.IGNORECASE).strip()
+            if cleaned and cleaned != query.strip():
+                query = cleaned
+                break
+
+        results = await WebSearch.search(query, max_results=5)
+        if not results:
+            return f"Couldn't find anything for '{query}'. Try a different search term?"
+
+        lines = [f"Here's what I found for **{query}**:\n"]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. **{r['title']}**")
+            if r.get("snippet"):
+                lines.append(f"   {r['snippet']}")
+            if r.get("url"):
+                lines.append(f"   {r['url']}")
+        return "\n".join(lines)
+
+    # ─────────────────────────────────────────────
     # KNOWLEDGE Handler - Memory & recall
     # ─────────────────────────────────────────────
     async def _handle_knowledge(self, user_input: str, classification: dict) -> str:
@@ -1679,9 +1796,22 @@ Request: {summary}"""
         recall_keywords = ["recall", "remember", "what did", "do you know", "search", "find"]
 
         if any(kw in user_input.lower() for kw in store_keywords):
-            # Store new knowledge
+            # Store in ChromaDB
             doc_id = self.knowledge.store(user_input, category="user_note")
-            return f"✅ Got it, I'll remember that. (memory ID: {doc_id})"
+            # Also persist to about-me/notes.md so it survives restarts
+            try:
+                from journal import AboutMe
+                # Extract the note content (strip the "remember that" prefix)
+                note_text = user_input
+                for prefix in ["remember that ", "remember ", "save this: ", "note that ", "add a note: ",
+                                "make a note: ", "keep in mind ", "don't forget ", "jot this down: "]:
+                    if note_text.lower().startswith(prefix):
+                        note_text = note_text[len(prefix):]
+                        break
+                AboutMe.append_note(note_text)
+            except Exception:
+                pass
+            return f"Got it, {Config.USER_NAME}. I'll remember that."
 
         elif any(kw in user_input.lower() for kw in recall_keywords):
             # Recall from knowledge base

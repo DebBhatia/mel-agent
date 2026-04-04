@@ -521,28 +521,36 @@ class VoiceAgent:
 
     async def _homecoming_greeting(self):
         """
-        Full homecoming flow:
-        1. Greet Deb by name with time-appropriate message
-        2. Fetch today's calendar from the orchestrator
-        3. Read out the schedule
-        4. Stay in command mode so Deb can ask follow-ups
+        Full homecoming flow — delegates to /homecoming server endpoint.
+        Server handles: time-appropriate greeting, weather + smart advice,
+        calendar briefing, and silently opens Chrome tabs (news + stocks).
+        Pi just speaks the returned text, then waits for follow-up commands.
         """
-        greeting, followup = self._get_time_greeting()
-        welcome = f"{greeting} {USER_NAME}, {followup}."
-
-        # Fetch today's calendar from the orchestrator
-        calendar_summary = await self._fetch_today_calendar()
-
-        if calendar_summary:
-            welcome += f" Do you want to know how your day looks like? Here's what I found. {calendar_summary}"
-        else:
-            welcome += " You have a clear schedule today. No appointments."
-
-        await self.tts.speak(welcome)
-
-        # Stay in command mode so they can ask follow-ups
-        await self.tts.speak("Is there anything else you need?")
+        speech = await self._fetch_homecoming_speech()
+        await self.tts.speak(speech)
         await self._process_command()
+
+    async def _fetch_homecoming_speech(self) -> str:
+        """Call /homecoming on the orchestrator server and return the speech text."""
+        import httpx
+        headers = {"Authorization": f"Bearer {AGENT_API_KEY}"}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{ORCHESTRATOR_URL}/homecoming",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("speech", f"Welcome home, {USER_NAME}!")
+                else:
+                    logger.warning(f"/homecoming returned {resp.status_code}, using fallback")
+        except Exception as e:
+            logger.error(f"Homecoming fetch failed: {e}")
+
+        # Fallback if server unreachable — basic local greeting
+        greeting, followup = self._get_time_greeting()
+        return f"{greeting} {USER_NAME}, {followup}. I couldn't reach the server for your full briefing right now."
 
     async def _fetch_today_calendar(self) -> str:
         """Ask the orchestrator for today's calendar events."""

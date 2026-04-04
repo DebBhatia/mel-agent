@@ -142,6 +142,59 @@ class WeatherService:
 
         return summary
 
+    @staticmethod
+    def get_weather_advice(temp: float, description: str, units: str = "imperial") -> str:
+        """Return smart contextual advice based on weather conditions.
+
+        Returns one or more natural-language tips suitable for spoken TTS.
+        """
+        advice = []
+        desc_lower = description.lower()
+
+        # Rain / storms
+        rain_words = ["rain", "drizzle", "shower", "storm", "thunderstorm", "sleet", "hail"]
+        if any(w in desc_lower for w in rain_words):
+            advice.append("Grab your umbrella — it's wet out there.")
+
+        # Snow / ice
+        snow_words = ["snow", "blizzard", "flurr"]
+        if any(w in desc_lower for w in snow_words):
+            advice.append("Roads may be slippery — drive carefully.")
+
+        # Temperature-based advice (imperial °F)
+        if units == "imperial":
+            if temp >= 95:
+                advice.append("It's blazing hot. Stay hydrated and try to stay cool.")
+            elif temp >= 85:
+                advice.append("It's pretty hot out. Stay hydrated.")
+            elif temp <= 20:
+                advice.append("Bundle up — it's dangerously cold out there.")
+            elif temp <= 35:
+                advice.append("Wear your heavy coat and gloves, it's freezing.")
+            elif temp <= 45:
+                advice.append("Wear your jacket — it's cold out.")
+        else:  # metric °C
+            if temp >= 35:
+                advice.append("It's blazing hot. Stay hydrated and try to stay cool.")
+            elif temp >= 30:
+                advice.append("It's pretty hot out. Stay hydrated.")
+            elif temp <= -6:
+                advice.append("Bundle up — it's dangerously cold out there.")
+            elif temp <= 2:
+                advice.append("Wear your heavy coat and gloves, it's freezing.")
+            elif temp <= 7:
+                advice.append("Wear your jacket — it's cold out.")
+
+        # Fog / low visibility
+        if "fog" in desc_lower or "mist" in desc_lower:
+            advice.append("Low visibility out there — leave a bit early if you're driving.")
+
+        # Wind
+        if "wind" in desc_lower or "gust" in desc_lower:
+            advice.append("It's quite windy today.")
+
+        return " ".join(advice) if advice else ""
+
     async def needs_umbrella(self, city: Optional[str] = None) -> str:
         """Quick check if umbrella is needed."""
         current = await self.get_current(city)
