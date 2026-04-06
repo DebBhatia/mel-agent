@@ -800,10 +800,41 @@ class AgentOrchestrator:
             logger.warning("Knowledge base not available (install chromadb)")
 
     async def wake_up(self):
-        """Activate the agent."""
+        """Activate the agent with a full homecoming briefing (weather + calendar)."""
         self.is_awake = True
         logger.info(f"🟢 {Config.AGENT_NAME} is awake and ready!")
-        return self._build_greeting()
+
+        parts = [self._build_greeting()]
+
+        # Add weather briefing
+        try:
+            if self.weather and self.weather.is_configured():
+                current = await self.weather.get_current()
+                if current and "error" not in current:
+                    temp = current.get("temperature", "")
+                    unit = current.get("unit_symbol", "°")
+                    desc = current.get("description", "")
+                    parts.append(f"It's currently {temp}{unit} and {desc.lower()} outside.")
+                    # Smart advice
+                    from weather import WeatherService
+                    advice = WeatherService.get_weather_advice(temp, desc, self.weather.units)
+                    if advice:
+                        parts.append(advice)
+        except Exception as e:
+            logger.warning(f"Wake-up weather fetch failed: {e}")
+
+        # Add calendar briefing
+        try:
+            if self.actions and "calendar_list" in self.actions.actions:
+                result = await self.actions.execute("calendar_list", {"days": 1})
+                if result and not result.startswith(("No upcoming", "Calendar not", "Failed")):
+                    parts.append(f"Here's your schedule: {result}")
+                else:
+                    parts.append("Your calendar is clear today.")
+        except Exception as e:
+            logger.warning(f"Wake-up calendar fetch failed: {e}")
+
+        return " ".join(parts)
 
     def _build_greeting(self) -> str:
         """Generate a natural, time-appropriate greeting for the user."""
@@ -844,14 +875,17 @@ class AgentOrchestrator:
         if _stripped in ("mel", "mel?", "mel!") or _stripped.startswith("mel:") or _stripped.startswith("mel,"):
             return f"Yes, {Config.USER_NAME}?"
 
-        # Check for wake/sleep commands — accept "daddy is home", "daddy's home", "daddys home"
+        # Check for wake/sleep commands — primary: "wake up daddy is home"
         _wake_variants = [
             Config.WAKE_PHRASE.lower(),
+            "wake up daddy is home",
             "wake up daddy's home",
             "wake up daddys home",
             "daddy's home",
             "daddy is home",
             "daddys home",
+            "dayy is home",      # common speech-to-text typo
+            "day is home",       # another STT variant
         ]
         if any(v in _inp for v in _wake_variants):
             return await self.wake_up()

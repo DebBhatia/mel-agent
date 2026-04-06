@@ -121,12 +121,12 @@ class TestDashboardServing:
             assert "no-store" in resp.headers.get("cache-control", "")
 
     @pytest.mark.asyncio
-    async def test_dashboard_contains_tts_toggle(self):
-        """Verify the mute/unmute button was added to the dashboard."""
+    async def test_dashboard_contains_speaker_toggle(self):
+        """Verify speaker toggle button exists."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get("/")
-            assert "tts-toggle" in resp.text
+            assert "toggleSpeaker" in resp.text
 
     @pytest.mark.asyncio
     async def test_dashboard_contains_spotify_sdk(self):
@@ -138,21 +138,22 @@ class TestDashboardServing:
 
     @pytest.mark.asyncio
     async def test_dashboard_contains_homecoming_detection(self):
-        """Verify homecoming variant detection JS exists."""
+        """Verify homecoming/wake phrase detection and /homecoming call exist."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get("/")
-            assert "isHomecoming" in resp.text
-            assert "daddy is home" in resp.text
+            assert "isWakePhrase" in resp.text
+            assert "homecoming" in resp.text
+            assert "daddy" in resp.text
 
     @pytest.mark.asyncio
-    async def test_dashboard_contains_speak_text(self):
-        """Verify speakText TTS function exists."""
+    async def test_dashboard_contains_tts(self):
+        """Verify TTS function exists (speakResponse with ElevenLabs + browser fallback)."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.get("/")
-            assert "speakText" in resp.text
-            assert "checkTTS" in resp.text
+            assert "speakResponse" in resp.text
+            assert "elevenlabsAvailable" in resp.text
 
 
 # ═══════════════════════════════════════════════════════════════════════
