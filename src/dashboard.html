@@ -1826,22 +1826,30 @@ async function sendCommand() {
   await smartPause();
   try {
     if (isWakePhrase(text)) {
-      // Try full homecoming briefing first (weather + calendar + browser tabs)
+      // Try full homecoming briefing (weather + calendar + browser tabs)
+      let handled = false;
       try {
         const hr = await fetch(`${API}/homecoming`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN,'Content-Type':'application/json'}});
         if (hr.ok) {
           const hd = await hr.json();
           await checkHealth();
           const speech = hd.speech || '';
-          if (speech) { addMsg('commandLog','mel',speech); speakResponse(speech); }
-          await smartResume();
-          return;
+          if (speech) { addMsg('commandLog','mel',speech); speakResponse(speech); handled = true; }
         }
-      } catch(e) { /* fall through to /wake */ }
-      // Fallback to simple /wake
-      const r = await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
-      await checkHealth();
-      if (r.ok) { const d=await r.json(); const g=d.message||''; if(g){addMsg('commandLog','mel',g);speakResponse(g);} }
+      } catch(e) { console.log('Homecoming endpoint failed, trying /process:', e); }
+      // Fallback: send through /process which has the enhanced wake_up() with weather+calendar
+      if (!handled) {
+        try {
+          const pr = await fetch(`${API}/process`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({input:text})});
+          if (pr.ok) { const pd=await pr.json(); const resp=pd.response||''; if(resp){addMsg('commandLog','mel',resp);speakResponse(resp);} }
+          await checkHealth();
+        } catch(e2) {
+          // Last resort: simple /wake
+          const r = await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}});
+          await checkHealth();
+          if (r.ok) { const d=await r.json(); const g=d.message||''; if(g){addMsg('commandLog','mel',g);speakResponse(g);} }
+        }
+      }
       await smartResume();
       return;
     }
@@ -1866,17 +1874,24 @@ async function sendChat() {
   await smartPause();
   try {
     if (isWakePhrase(text)) {
+      let handled = false;
       try {
         const hr = await fetch(`${API}/homecoming`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN,'Content-Type':'application/json'}});
         if (hr.ok) {
           const hd = await hr.json();
           await checkHealth();
           const speech = hd.speech || '';
-          if (speech) { addMsg('chatLog','mel',speech); speakResponse(speech); }
-          await smartResume();
-          return;
+          if (speech) { addMsg('chatLog','mel',speech); speakResponse(speech); handled = true; }
         }
-      } catch(e) { /* fall through */ }
+      } catch(e) { console.log('Homecoming failed, falling through to /process'); }
+      if (!handled) {
+        // Fallback: send through /process (enhanced wake_up with weather+calendar)
+        const pr = await fetch(`${API}/process`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({input:text})});
+        if (pr.ok) { const pd=await pr.json(); const resp=pd.response||''; if(resp){addMsg('chatLog','mel',resp);speakResponse(resp);} }
+        await checkHealth();
+      }
+      await smartResume();
+      return;
     }
     if (!isAwake) { await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}}); await checkHealth(); }
     const reply = await streamResponse('chatLog', text);

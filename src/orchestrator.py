@@ -807,6 +807,7 @@ class AgentOrchestrator:
         parts = [self._build_greeting()]
 
         # Add weather briefing
+        weather_added = False
         try:
             if self.weather and self.weather.is_configured():
                 current = await self.weather.get_current()
@@ -814,25 +815,41 @@ class AgentOrchestrator:
                     temp = current.get("temperature", "")
                     unit = current.get("unit_symbol", "°")
                     desc = current.get("description", "")
-                    parts.append(f"It's currently {temp}{unit} and {desc.lower()} outside.")
-                    # Smart advice
-                    from weather import WeatherService
-                    advice = WeatherService.get_weather_advice(temp, desc, self.weather.units)
-                    if advice:
-                        parts.append(advice)
+                    if temp and desc:
+                        parts.append(f"It's currently {temp}{unit} and {desc.lower()} outside.")
+                        weather_added = True
+                        # Smart advice
+                        try:
+                            from weather import WeatherService
+                            advice = WeatherService.get_weather_advice(temp, desc, self.weather.units)
+                            if advice:
+                                parts.append(advice)
+                        except Exception:
+                            pass
         except Exception as e:
             logger.warning(f"Wake-up weather fetch failed: {e}")
+        if not weather_added:
+            logger.info("Weather not available for wake-up briefing")
 
         # Add calendar briefing
+        calendar_added = False
         try:
             if self.actions and "calendar_list" in self.actions.actions:
                 result = await self.actions.execute("calendar_list", {"days": 1})
                 if result and not result.startswith(("No upcoming", "Calendar not", "Failed")):
                     parts.append(f"Here's your schedule: {result}")
+                    calendar_added = True
                 else:
                     parts.append("Your calendar is clear today.")
+                    calendar_added = True
         except Exception as e:
             logger.warning(f"Wake-up calendar fetch failed: {e}")
+        if not calendar_added:
+            logger.info("Calendar not available for wake-up briefing")
+
+        # Always end with availability
+        if len(parts) > 1:
+            parts.append("What can I do for you?")
 
         return " ".join(parts)
 
