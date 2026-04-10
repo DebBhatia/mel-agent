@@ -1,4 +1,4 @@
-# SECURITY: Never commit secrets
+# SECURITY: Never commit secrets or personal data
 .env
 *.key
 *.pem
@@ -8,6 +8,11 @@ google_credentials.json
 google_token.json
 spotify_token.json
 reminders.json
+data/about-me/
+data/notification_log.json
+Encrypted/
+config/agent/
+.claude/
 
 # Python
 __pycache__/

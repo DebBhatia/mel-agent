@@ -39,8 +39,14 @@ class CodeGenConfig:
     TEMPLATES_DIR = os.path.join(WORKSPACE_DIR, "templates")
     DEPLOY_DIR = os.getenv("CODEGEN_DEPLOY_DIR", os.path.expanduser("~/agent-deploys"))
     MAX_FILE_SIZE = 50_000  # Max chars per generated file
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
+    # Load from vault first, then env
+    try:
+        from security import SecretVault
+        _vault = SecretVault()
+        ANTHROPIC_API_KEY = _vault.get("ANTHROPIC_API_KEY", "") or os.getenv("ANTHROPIC_API_KEY", "")
+    except Exception:
+        ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     AUTO_DEPLOY_PATTERNS = ["landing-page", "dashboard", "portfolio", "static-site"]
     SANDBOX_ENABLED = True
 
@@ -179,6 +185,13 @@ IMPORTANT: Use this exact format. Do NOT wrap in JSON. Do NOT use markdown code 
                     json=payload,
                 )
                 result = response.json()
+                if "error" in result:
+                    error_msg = result["error"].get("message", str(result["error"]))
+                    logger.error(f"Claude API error: {error_msg}")
+                    raise RuntimeError(f"Claude API: {error_msg}")
+                if "content" not in result or not result["content"]:
+                    logger.error(f"Unexpected API response: {str(result)[:200]}")
+                    raise RuntimeError("Empty response from Claude API")
                 raw_text = result["content"][0]["text"]
                 return self._parse_response(raw_text)
 

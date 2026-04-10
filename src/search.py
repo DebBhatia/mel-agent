@@ -4,7 +4,7 @@ WEB SEARCH MODULE
 DuckDuckGo-powered web search for Mel.
 Free, no API key required.
 
-Install: pip install duckduckgo-search
+Install: pip install ddgs
 """
 
 import logging
@@ -20,13 +20,16 @@ class WebSearch:
     async def search(query: str, max_results: int = 5) -> list[dict]:
         """
         Search the web for query. Returns list of results with title, url, snippet.
-        Falls back gracefully if duckduckgo-search is not installed.
+        Falls back gracefully if ddgs is not installed.
         """
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
         except ImportError:
-            logger.warning("duckduckgo-search not installed. Run: pip install duckduckgo-search")
-            return []
+            try:
+                from duckduckgo_search import DDGS
+            except ImportError:
+                logger.warning("ddgs not installed. Run: pip install ddgs")
+                return []
 
         try:
             results = []
@@ -46,9 +49,12 @@ class WebSearch:
     async def news_search(query: str, max_results: int = 5) -> list[dict]:
         """Search DuckDuckGo News."""
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
         except ImportError:
-            return []
+            try:
+                from duckduckgo_search import DDGS
+            except ImportError:
+                return []
 
         try:
             results = []

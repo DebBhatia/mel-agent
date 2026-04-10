@@ -212,9 +212,16 @@ User request: """
         elif any(kw in text for kw in ["remember", "save this", "note that", "keep in mind", "don't forget",
                                         "add a note", "make a note", "write this down", "jot this down"]):
             return {"category": "KNOWLEDGE", "intent": "store", "requires_cloud": False, "summary": summary}
-        elif any(kw in text for kw in ["search for", "search the web", "look up", "google that", "google this",
+        elif (any(kw in text for kw in ["search for", "search the web", "look up", "google that", "google this",
                                         "find on the internet", "find online", "web search", "browse for",
-                                        "search online", "look it up", "look that up"]):
+                                        "search online", "look it up", "look that up",
+                                        "search the internet", "look on the internet", "find on the web",
+                                        "search on the internet", "search on internet",
+                                        "search the net", "search on the web"])
+              or __import__('re').search(r'\b(search|research|look)\b.{0,25}\b(internet|online|web|for me)\b', text)
+              or __import__('re').search(r'\b(check|find out|look into|find)\b.{0,20}\b(online|internet|web)\b', text)
+              or __import__('re').search(r"\b(what'?s|what\s+is|how\s+much\s+is)\b.{0,30}\b(price|cost|worth)\b", text)
+              or __import__('re').search(r'\b(price|stock price|exchange rate|score of)\b.*\bright now\b', text)):
             return {"category": "SEARCH", "intent": "web_search", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["open news", "show me the news", "show news", "open the news",
                                         "open stocks", "show stocks", "open the market", "show the market",
@@ -445,6 +452,7 @@ class ClaudeClient:
 
         return (
             f"You are {Config.AGENT_NAME}, {Config.USER_NAME}'s personal assistant. "
+            f"{Config.USER_NAME} is male — always use he/him pronouns when referring to him. "
             f"You talk like a close friend who happens to know everything — direct, casual, no fluff. "
             f"Current date and time: {time_str}. "
             f"\n\nTone rules (never break these):"
@@ -703,6 +711,7 @@ class AgentOrchestrator:
         # Pending calendar action awaiting user confirmation
         # Structure: {"type": "create"|"delete"|"update", "params": {}, "description": str}
         self.pending_calendar_action = None
+        self._last_search_results = None
 
         # Capabilities
         self.build_pipeline = None
@@ -916,6 +925,19 @@ class AgentOrchestrator:
         # Step 0: If there's a pending confirmation action, route to calendar handler first
         if self.pending_calendar_action:
             return await self._handle_calendar(user_input, {})
+
+        # Quick check: user asking for search sources/links from last search
+        if hasattr(self, '_last_search_results') and self._last_search_results:
+            _links_ask = any(kw in _inp for kw in ["show me the links", "show the links", "share the links",
+                                                     "give me the sources", "show sources", "share sources",
+                                                     "send me the links", "what are the sources", "the urls",
+                                                     "show me the resources", "share the resources"])
+            if _links_ask:
+                lines = ["Here are the sources:\n"]
+                for i, r in enumerate(self._last_search_results, 1):
+                    lines.append(f"{i}. **{r['title']}**\n   {r.get('url', '')}")
+                self._last_search_results = None
+                return "\n".join(lines)
 
         # Step 1: Keyword classify only — skip slow Ollama LLM for general queries
         kw = self.classifier._keyword_classify(user_input)
@@ -1799,38 +1821,75 @@ Request: {summary}"""
             # Fall back to Claude for search-like questions
             return await self.claude.converse(user_input)
 
-        # Extract the search query (strip "search for", "look up" prefixes)
+        # Extract the search query — strip conversational preamble to get the core question
         query = user_input
         import re
-        prefixes = [
-            r"^search\s+(for\s+|the\s+web\s+for\s+|online\s+for\s+)?",
-            r"^look\s+up\s+",
-            r"^google\s+(that|this|\s+)?",
-            r"^find\s+(on\s+the\s+internet\s+|online\s+)?",
-            r"^web\s+search\s+(for\s+)?",
-            r"^browse\s+for\s+",
-            r"^search\s+online\s+for\s+",
-            r"^look\s+that\s+up[:\s]*",
-            r"^look\s+it\s+up[:\s]*",
+        # Iteratively strip common preamble patterns
+        preamble_patterns = [
+            r"^(hey\s+mel[,\s]*|mel[,\s]+)",
+            r"^(can|could|would)\s+you\s+(please\s+)?",
+            r"^(please\s+)?",
+            r"^(research|search|look\s+up|google|find|browse|check)\s+"
+            r"(on\s+the\s+(internet|web)\s+|on\s+the\s+|on\s+|the\s+(internet|web)\s+(for\s+)?|for\s+|online\s+)?"
+            r"(for\s+me\s+|for\s+us\s+)?"
+            r"(about\s+|for\s+|on\s+)?",
+            r"^(tell\s+me|i\s+want\s+to\s+know|i\s+need\s+to\s+know|find\s+out)\s+(about\s+)?",
+            r"^(what'?s|what\s+is)\s+",
+            # Don't strip "how much" — it's useful context for the search query
         ]
-        for p in prefixes:
-            cleaned = re.sub(p, "", query.strip(), flags=re.IGNORECASE).strip()
-            if cleaned and cleaned != query.strip():
-                query = cleaned
-                break
+        changed = True
+        while changed:
+            changed = False
+            for p in preamble_patterns:
+                cleaned = re.sub(p, "", query.strip(), flags=re.IGNORECASE).strip()
+                if cleaned and len(cleaned) < len(query.strip()):
+                    query = cleaned
+                    changed = True
+                    break
+        # Clean up trailing noise words
+        query = re.sub(r'\s+(for|about|on|the|a|an|is|are|of)\s*$', '', query, flags=re.IGNORECASE).strip()
+        # If stripping removed too much, use original input
+        if len(query) < 3:
+            query = user_input
+
+        # Add "price" context if the original question was about cost
+        if re.search(r'\b(how much|price|cost|worth)\b', user_input, re.IGNORECASE) and not re.search(r'\b(price|cost)\b', query, re.IGNORECASE):
+            query += " price"
 
         results = await WebSearch.search(query, max_results=5)
         if not results:
             return f"Couldn't find anything for '{query}'. Try a different search term?"
 
-        lines = [f"Here's what I found for **{query}**:\n"]
-        for i, r in enumerate(results, 1):
-            lines.append(f"{i}. **{r['title']}**")
-            if r.get("snippet"):
-                lines.append(f"   {r['snippet']}")
-            if r.get("url"):
-                lines.append(f"   {r['url']}")
-        return "\n".join(lines)
+        # Build context from search results for Claude to summarize
+        search_context = "\n".join(
+            f"- {r['title']}: {r.get('snippet', '')} (source: {r.get('url', '')})"
+            for r in results
+        )
+
+        # Use Claude to produce a smart, concise summary
+        try:
+            summary_prompt = (
+                f"The user asked: \"{user_input}\"\n\n"
+                f"Here are web search results:\n{search_context}\n\n"
+                f"Give a concise, direct answer based on these results. "
+                f"Speak naturally as Mel (personal AI assistant). "
+                f"Include key facts, numbers, and prices if relevant. "
+                f"At the end, mention you can share the source links if they want more detail. "
+                f"Keep it to 2-4 sentences max."
+            )
+            summary = await self.claude.converse(summary_prompt, extra_context="You are summarizing web search results. Be factual and concise.")
+            # Store the URLs so user can ask for them
+            self._last_search_results = results
+            return summary
+        except Exception as e:
+            logger.warning(f"Claude summarization failed, returning raw results: {e}")
+            # Fallback to raw results
+            lines = [f"Here's what I found for **{query}**:\n"]
+            for i, r in enumerate(results, 1):
+                lines.append(f"{i}. **{r['title']}**")
+                if r.get("snippet"):
+                    lines.append(f"   {r['snippet']}")
+            return "\n".join(lines)
 
     # ─────────────────────────────────────────────
     # KNOWLEDGE Handler - Memory & recall
