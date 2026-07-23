@@ -1,0 +1,40 @@
+# macOS dependencies (all-in-one: orchestrator server + voice listener)
+# Run this on your Mac mini after `brew install portaudio ffmpeg`
+# See scripts/setup-mac.sh for the full guided install.
+
+httpx>=0.27.0
+python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.0.0
+cryptography>=42.0.0
+
+# Google Calendar integration
+google-api-python-client>=2.150.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# Twilio (calls & SMS)
+twilio>=9.0.0
+
+# Knowledge Base (local vector DB)
+chromadb>=0.5.0
+
+# Web Search (free DuckDuckGo search, no API key needed)
+duckduckgo-search>=6.0.0
+
+# Timezone support for Mel's system prompt
+pytz>=2024.0
+
+# ── Voice listener (wake word, speech-to-text, text-to-speech) ──
+# Requires: brew install portaudio
+numpy>=1.26.0
+PyAudio>=0.2.14
+openai-whisper>=20240930
+pvporcupine>=4.0.0
+
+# Piper TTS (local, no cloud needed) — voice model is downloaded by setup-mac.sh
+piper-tts
+
+# Smart Home (Home Assistant REST API — uses httpx, no extra deps)
+# For MQTT support (optional): paho-mqtt>=2.0.0

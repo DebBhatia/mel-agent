@@ -1,11 +1,13 @@
 """
-WAKE WORD LISTENER - Raspberry Pi
-===================================
+WAKE WORD LISTENER - Raspberry Pi / macOS
+===========================================
 Listens for wake word using Porcupine (Picovoice),
 then activates the agent and starts voice interaction.
 
 Runs 24/7 on minimal resources. Only processes audio
-after wake word is detected.
+after wake word is detected. Works on Raspberry Pi (Linux/ALSA)
+and macOS (via afplay) without changes — TTS playback and
+microphone capture are both platform-aware.
 
 Falls back to keyboard/text mode if Porcupine is unavailable.
 
@@ -16,7 +18,9 @@ No voice data or commands are logged.
 import os
 import asyncio
 import logging
+import platform
 import tempfile
+import wave
 from datetime import datetime
 from enum import Enum
 import numpy as np
@@ -198,8 +202,8 @@ class WakeWordDetector:
 
 class AudioCapture:
     """
-    Captures audio from USB microphone on Raspberry Pi.
-    Uses PyAudio for cross-platform compatibility.
+    Captures audio from a USB (or built-in) microphone.
+    Uses PyAudio for cross-platform compatibility (Raspberry Pi, macOS, etc).
     """
 
     def __init__(self):
@@ -286,9 +290,14 @@ class SpeechToText:
         return result["text"].strip()
 
 
+PIPER_SAMPLE_RATE = int(os.getenv("PIPER_SAMPLE_RATE", "22050"))
+
+
 class TextToSpeech:
     """
     Converts text to speech. Supports local (Piper) and cloud (ElevenLabs).
+    Playback works on macOS (afplay), Linux (aplay/mpg123), and falls back
+    to xdg-open elsewhere.
     """
 
     def __init__(self):
@@ -303,10 +312,31 @@ class TextToSpeech:
         else:
             logger.warning(f"Unknown TTS engine: {self.engine}")
 
+    @staticmethod
+    async def _play_file(path: str):
+        """Play an audio file using the platform's native player."""
+        system = platform.system()
+        if system == "Darwin":
+            cmd = ["afplay", path]
+        elif system == "Windows":
+            cmd = ["cmd", "/c", "start", "/wait", "", path]
+        else:
+            cmd = ["aplay", path] if path.endswith(".wav") else ["mpg123", path]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except FileNotFoundError:
+            logger.error(f"Audio player not found ({cmd[0]}). Install it to enable playback.")
+
     async def _speak_piper(self, text: str):
         """Use Piper TTS (runs locally, no cloud needed)."""
         try:
-            # Pipe: piper reads stdin text → outputs raw audio → aplay plays it
+            # Piper reads stdin text → outputs raw 16-bit PCM audio
             piper_proc = await asyncio.create_subprocess_exec(
                 "piper", "--model", PIPER_MODEL, "--output-raw",
                 stdin=asyncio.subprocess.PIPE,
@@ -316,16 +346,24 @@ class TextToSpeech:
             raw_audio, _ = await piper_proc.communicate(input=text.encode("utf-8"))
 
             if raw_audio:
-                # Play the raw audio through aplay
-                aplay_proc = await asyncio.create_subprocess_exec(
-                    "aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await aplay_proc.communicate(input=raw_audio)
+                # Wrap the raw PCM in a WAV header so afplay/aplay can both play
+                # it directly as a file (afplay does not accept headerless PCM).
+                fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="mel_")
+                try:
+                    os.close(fd)
+                    with wave.open(wav_path, "wb") as wav_file:
+                        wav_file.setnchannels(1)
+                        wav_file.setsampwidth(2)  # 16-bit
+                        wav_file.setframerate(PIPER_SAMPLE_RATE)
+                        wav_file.writeframes(raw_audio)
+                    await self._play_file(wav_path)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
         except FileNotFoundError:
-            logger.error("Piper or aplay not installed. Install: pip install piper-tts")
+            logger.error("Piper not installed. Install: pip install piper-tts")
         except Exception as e:
             logger.error(f"Piper TTS error: {e}")
 
@@ -352,12 +390,7 @@ class TextToSpeech:
                     try:
                         os.write(fd, response.content)
                         os.close(fd)
-                        proc = await asyncio.create_subprocess_exec(
-                            "mpg123", audio_path,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await proc.wait()
+                        await self._play_file(audio_path)
                     finally:
                         # Always clean up the temp audio file
                         try:
