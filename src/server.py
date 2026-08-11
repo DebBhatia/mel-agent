@@ -533,7 +533,11 @@ async def process_input(request: ProcessRequest):
         raise HTTPException(status_code=400, detail="Empty input")
     if len(request.input) > 5000:
         raise HTTPException(status_code=400, detail="Input too long (max 5000 chars)")
-    response = await agent.process(request.input)
+    await ws_manager.broadcast("status", {"status": "thinking"})
+    try:
+        response = await agent.process(request.input)
+    finally:
+        await ws_manager.broadcast("status", {"status": "idle"})
     return ProcessResponse(response=response, timestamp=datetime.now().isoformat())
 
 
@@ -665,6 +669,22 @@ async def tts_config():
     except Exception:
         key = os.getenv("ELEVENLABS_API_KEY", "")
     return {"elevenlabs": bool(key)}
+
+
+class VoiceEventRequest(BaseModel):
+    event: str = Field(..., max_length=30)   # wake | listening_start | listening_stop | speaking_start | speaking_stop
+    mode: Optional[str] = Field(default=None, max_length=20)  # command | homecoming
+
+_VOICE_EVENTS = {"wake", "listening_start", "listening_stop", "speaking_start", "speaking_stop"}
+
+@app.post("/voice/event", dependencies=[Depends(require_api_key)])
+async def voice_event(request: VoiceEventRequest):
+    """Receive real-time voice-pipeline state from wake_listener.py (Pi/Mac) and
+    rebroadcast to all connected dashboard WebSocket clients."""
+    if request.event not in _VOICE_EVENTS:
+        raise HTTPException(status_code=400, detail="Unknown voice event")
+    await ws_manager.broadcast("voice", {"state": request.event, "mode": request.mode or ""})
+    return {"status": "ok"}
 
 
 # ── Code Generation ──────────────────────────

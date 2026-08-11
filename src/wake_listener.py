@@ -48,6 +48,24 @@ PORCUPINE_KEYWORD_COMMAND = os.getenv("PORCUPINE_KEYWORD_COMMAND", "")  # custom
 PORCUPINE_KEYWORD_HOMECOMING = os.getenv("PORCUPINE_KEYWORD_HOMECOMING", "")  # custom homecoming .ppn file
 
 
+async def _notify_server(event: str, mode: str | None = None):
+    """Best-effort, fire-and-forget notification to the server so the dashboard
+    can reflect real voice-pipeline state. Never raises — must not affect the
+    hot audio-capture loop."""
+    if not AGENT_API_KEY:
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(
+                f"{ORCHESTRATOR_URL}/voice/event",
+                json={"event": event, "mode": mode},
+                headers={"Authorization": f"Bearer {AGENT_API_KEY}"},
+            )
+    except Exception:
+        pass  # dashboard reactivity is cosmetic — never block/crash the voice loop
+
+
 class WakeMode(Enum):
     """Which wake word was spoken determines the interaction mode."""
     HOMECOMING = "homecoming"  # "wake up daddy is home" → greeting + calendar
@@ -296,12 +314,16 @@ class TextToSpeech:
 
     async def speak(self, text: str):
         """Convert text to speech and play it."""
-        if self.engine == "piper":
-            await self._speak_piper(text)
-        elif self.engine == "elevenlabs":
-            await self._speak_elevenlabs(text)
-        else:
-            logger.warning(f"Unknown TTS engine: {self.engine}")
+        asyncio.create_task(_notify_server("speaking_start"))
+        try:
+            if self.engine == "piper":
+                await self._speak_piper(text)
+            elif self.engine == "elevenlabs":
+                await self._speak_elevenlabs(text)
+            else:
+                logger.warning(f"Unknown TTS engine: {self.engine}")
+        finally:
+            asyncio.create_task(_notify_server("speaking_stop"))
 
     async def _speak_piper(self, text: str):
         """Use Piper TTS (runs locally, no cloud needed)."""
@@ -453,6 +475,7 @@ class VoiceAgent:
                     wake_mode = self.wake_detector.detect(audio_chunk)
                     if wake_mode is not None:
                         self.is_active = True
+                        asyncio.create_task(_notify_server("wake", wake_mode.value))
 
                         if wake_mode == WakeMode.HOMECOMING:
                             await self._homecoming_greeting()
@@ -621,6 +644,7 @@ class VoiceAgent:
     async def _process_command(self):
         """Capture full voice command after wake word."""
         logger.info("Listening for command...")
+        asyncio.create_task(_notify_server("listening_start"))
         audio_buffer = []
         silence_count = 0
         max_silence_chunks = int(SILENCE_DURATION * SAMPLE_RATE / CHUNK_SIZE)
@@ -638,6 +662,8 @@ class VoiceAgent:
                 silence_count += 1
             else:
                 silence_count = 0
+
+        asyncio.create_task(_notify_server("listening_stop"))
 
         if total_chunks >= max_total_chunks:
             logger.info("Max command duration reached, processing what we have")

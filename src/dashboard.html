@@ -294,6 +294,10 @@ button{cursor:pointer;border:none;background:none;color:inherit}
   position:relative;z-index:1;
   transform-style:preserve-3d;
 }
+.portal-active .terminal-card {
+  box-shadow: 0 8px 60px -4px rgba(0,217,255,0.4);
+  transition: box-shadow 0.6s ease;
+}
 .terminal-header{
   display:flex;align-items:center;gap:12px;
   padding:16px 20px;
@@ -1579,6 +1583,13 @@ function connectWebSocket() {
             _updateStatusDisplay();
           }
           break;
+        case 'voice':
+          if (msg.state === 'wake') setOrbState('waking', {mode: msg.mode});
+          else if (msg.state === 'listening_start') { setListeningState(true); OrbAudio.setSynthetic(listeningEnvelope); }
+          else if (msg.state === 'listening_stop') { setListeningState(false); setOrbState('thinking'); }
+          else if (msg.state === 'speaking_start') { setSpeakingState(true, "Mel is speaking..."); OrbAudio.setSynthetic(speakingEnvelope); }
+          else if (msg.state === 'speaking_stop') { setSpeakingState(false); }
+          break;
         case 'pong':
           break;
       }
@@ -1602,6 +1613,7 @@ function updateAgentStatus(status) {
     txt.className = 'thinking'; txt.textContent = 'THINKING';
     txt.style.color = 'var(--cyan)';
     if (term) term.textContent = 'Thinking...';
+    setOrbState('thinking');
   } else if (status === 'responding') {
     dot.className = 'status-dot responding';
     txt.className = 'responding'; txt.textContent = 'RESPONDING';
@@ -1610,6 +1622,7 @@ function updateAgentStatus(status) {
   } else {
     txt.style.color = '';
     _updateStatusDisplay();
+    setOrbState('idle');
   }
 }
 
@@ -1771,6 +1784,49 @@ function isWakePhrase(t) {
   return /\b(wake\s*up|hey\s*mel|hello\s*mel|good\s*morning\s*mel|daddy.?s?\s*home|daddy\s*is\s*home)\b/i.test(t);
 }
 
+// ═══ ORB AUDIO / STATE DRIVER ════════════════════════════════════════
+let _audioCtx = null;
+function getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
+const OrbAudio = {
+  amplitude: 0, _analyser: null, _data: null, _synthFn: null, _synthT: 0,
+  attachAnalyser(node) { this._analyser = node; this._data = new Uint8Array(node.frequencyBinCount); this._synthFn = null; },
+  detach() { this._analyser = null; this._synthFn = null; },
+  setSynthetic(fn) { this._analyser = null; this._synthFn = fn; this._synthT = 0; },
+  tick(dt) {
+    let target = 0;
+    if (this._analyser) {
+      this._analyser.getByteTimeDomainData(this._data);
+      let sum = 0;
+      for (let i = 0; i < this._data.length; i++) { const v = (this._data[i]-128)/128; sum += v*v; }
+      target = Math.min(1, Math.sqrt(sum/this._data.length) * 4);
+    } else if (this._synthFn) {
+      this._synthT += dt;
+      target = this._synthFn(this._synthT);
+    }
+    this.amplitude += (target - this.amplitude) * 0.25;
+    return this.amplitude;
+  }
+};
+const speakingEnvelope = t => 0.35 + 0.25*Math.sin(t*9) + 0.15*Math.sin(t*17.3+1) + 0.05*Math.sin(t*31);
+const listeningEnvelope = t => 0.15 + 0.08*Math.sin(t*2.2);
+
+const OrbState = { current: 'idle' };
+let _orbIdleTimer = null;
+function setOrbState(state, opts = {}) {
+  OrbState.current = state;
+  document.getElementById('page-home')?.classList.toggle('portal-active', state !== 'idle');
+  if (state === 'waking' && typeof _shaderState !== 'undefined' && _shaderState && _shaderState.triggerWakeTween) _shaderState.triggerWakeTween();
+  clearTimeout(_orbIdleTimer);
+  if (state !== 'idle') {
+    _orbIdleTimer = setTimeout(() => setOrbState('idle'), 20000);
+  }
+}
+
 // ═══ VOICE BAR ════════════════════════════════════════════════════════
 function setSpeakingState(speaking, text='Mel is speaking...') {
   isSpeaking = speaking;
@@ -1784,6 +1840,8 @@ function setSpeakingState(speaking, text='Mel is speaking...') {
     const b = document.getElementById(id);
     if (b) { if (speaking) b.classList.add('active'); else b.classList.remove('active'); }
   });
+  setOrbState(speaking ? 'speaking' : 'idle');
+  if (speaking) OrbAudio.setSynthetic(speakingEnvelope);
 }
 function setListeningState(listening) {
   const bar = document.getElementById('voiceBar');
@@ -1792,6 +1850,7 @@ function setListeningState(listening) {
   bar.style.display = listening ? 'block' : 'none';
   if (barText) { barText.textContent = 'Listening... speak now'; barText.className = 'voice-bar-text listening'; }
   if (waveform) waveform.querySelectorAll('.wave-bar').forEach(b => { b.className = 'wave-bar magenta'; });
+  setOrbState(listening ? 'listening' : 'idle');
 }
 
 // ═══ WAKE / SLEEP ════════════════════════════════════════════════════
@@ -1919,6 +1978,13 @@ function toggleMic() {
     micActive=true;
     ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add('mic-active','active')});
     setListeningState(true);
+    navigator.mediaDevices.getUserMedia({audio:true}).then(stream => {
+      OrbAudio._micStream = stream;
+      const src = getAudioCtx().createMediaStreamSource(stream);
+      const analyser = getAudioCtx().createAnalyser(); analyser.fftSize = 256;
+      src.connect(analyser);
+      OrbAudio.attachAnalyser(analyser);
+    }).catch(() => OrbAudio.setSynthetic(listeningEnvelope));
   };
   recognition.onresult = (e) => {
     const t = e.results[0][0].transcript;
@@ -1935,6 +2001,7 @@ function toggleMic() {
     micActive=false;
     ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('mic-active','active')});
     setListeningState(false);
+    OrbAudio._micStream?.getTracks().forEach(t=>t.stop()); OrbAudio.detach();
   };
   recognition.start();
 }
@@ -1974,6 +2041,13 @@ async function speakResponse(text) {
         currentAudio = new Audio(url);
         currentAudio.onended=()=>{ setSpeakingState(false); URL.revokeObjectURL(url); currentAudio=null; };
         currentAudio.onerror=()=>{ setSpeakingState(false); speakBrowser(text); };
+        try {
+          const ctx = getAudioCtx();
+          const src = ctx.createMediaElementSource(currentAudio);
+          const analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+          src.connect(analyser); analyser.connect(ctx.destination); // MUST connect to destination or audio goes silent
+          OrbAudio.attachAnalyser(analyser);
+        } catch (e) { OrbAudio.setSynthetic(speakingEnvelope); }
         await currentAudio.play(); return;
       }
     } catch(e) { setSpeakingState(false); }
@@ -2545,8 +2619,113 @@ async function runRoutine(id) {
   startShader();
 })();
 
-// ═══ SHADER ANIMATION ═════════════════════════════════════════════════
+// ═══ SHADER ANIMATION — AUDIO-REACTIVE ORB ═══════════════════════════
 let _shaderState = null;
+
+// Classic Ashima Arts 3D simplex noise, shared by both vertex shaders.
+const SNOISE3_GLSL = `
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+float snoise(vec3 v){
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+            i.z + vec4(0.0, i1.z, i2.z, 1.0))
+          + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+          + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}`;
+
+const ORB_CORE_VERTEX = SNOISE3_GLSL + `
+uniform float uTime;
+uniform float uAmp;
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+void main(){
+  vNormal = normalize(normalMatrix * normal);
+  float n = snoise(position * 1.8 + uTime * 0.35);
+  float displacement = n * (0.08 + uAmp * 0.35);
+  vec3 displaced = position + normal * displacement;
+  vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
+  vViewPosition = -mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
+}`;
+
+const ORB_CORE_FRAGMENT = `
+precision highp float;
+uniform float uColorMix;
+uniform vec3 uCyan;
+uniform vec3 uMagenta;
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+void main(){
+  vec3 viewDir = normalize(vViewPosition);
+  float fresnel = pow(1.0 - max(dot(normalize(vNormal), viewDir), 0.0), 2.2);
+  vec3 core = mix(uCyan, uMagenta, uColorMix * 0.6);
+  vec3 rim = mix(uCyan, uMagenta, uColorMix);
+  vec3 color = mix(core * 0.5, rim, fresnel);
+  float alpha = clamp(0.35 + fresnel * 0.8, 0.0, 1.0);
+  gl_FragColor = vec4(color, alpha);
+}`;
+
+const ORB_GLOW_VERTEX = `
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+void main(){
+  vNormal = normalize(normalMatrix * normal);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vViewPosition = -mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
+}`;
+
+const ORB_GLOW_FRAGMENT = `
+precision highp float;
+uniform float uColorMix;
+uniform vec3 uCyan;
+uniform vec3 uMagenta;
+varying vec3 vNormal;
+varying vec3 vViewPosition;
+void main(){
+  vec3 viewDir = normalize(vViewPosition);
+  float fresnel = pow(1.0 - max(dot(normalize(vNormal), viewDir), 0.0), 3.0);
+  vec3 color = mix(uCyan, uMagenta, uColorMix);
+  gl_FragColor = vec4(color, fresnel * 0.6);
+}`;
 
 function startShader() {
   if (_shaderState) return; // already running
@@ -2555,101 +2734,127 @@ function startShader() {
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setClearColor(0x000000, 0);
 
-  const camera = new THREE.Camera();
-  camera.position.z = 1;
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+  camera.position.z = 3;
   const scene = new THREE.Scene();
-  const geometry = new THREE.PlaneGeometry(2, 2);
 
   const uniforms = {
-    time:       { value: 1.0 },
-    resolution: { value: new THREE.Vector2() }
+    uTime:     { value: 0 },
+    uAmp:      { value: 0 },
+    uColorMix: { value: 0 },
+    uCyan:     { value: new THREE.Color(0x00d9ff) },
+    uMagenta:  { value: new THREE.Color(0xe879f9) }
   };
 
+  const geometry = new THREE.SphereGeometry(1, 64, 64);
   const material = new THREE.ShaderMaterial({
     uniforms,
-    vertexShader: `void main(){gl_Position=vec4(position,1.0);}`,
-    fragmentShader: `
-      precision highp float;
-      uniform vec2 resolution;
-      uniform float time;
-
-      // Smooth noise-like function
-      float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-      float noise(vec2 p){
-        vec2 i=floor(p),f=fract(p);
-        f=f*f*(3.0-2.0*f);
-        return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
-                   mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
-      }
-
-      void main(void){
-        vec2 uv=(gl_FragCoord.xy*2.0-resolution.xy)/min(resolution.x,resolution.y);
-        float t=time*0.04;
-
-        // Multi-layered plasma + warp
-        float n1=noise(uv*2.0+t*0.3);
-        float n2=noise(uv*3.5-t*0.2+n1*0.5);
-        float n3=noise(uv*1.5+vec2(t*0.1,t*-0.15));
-
-        // Radial energy field
-        float r=length(uv);
-        float ring=0.003/abs(sin(r*6.0-t*1.5+n1*2.0)*0.5+0.5-0.3);
-
-        // Color channels — cyan/purple/magenta palette
-        vec3 col=vec3(0.0);
-        col.r=0.02+ring*0.3+n2*0.08;
-        col.g=0.04+ring*0.5+n1*0.06+0.03*sin(t+uv.x*3.0);
-        col.b=0.06+ring*0.7+n3*0.12+0.05*cos(t*0.7+uv.y*2.0);
-
-        // Subtle grid overlay
-        vec2 grid=abs(fract(uv*8.0+t*0.05)-0.5);
-        float gridLine=smoothstep(0.48,0.5,max(grid.x,grid.y));
-        col+=gridLine*0.015;
-
-        // Vignette
-        float vig=1.0-smoothstep(0.3,1.5,r);
-        col*=vig*0.9+0.1;
-
-        // Tone map to keep dark
-        col=col/(col+0.8)*1.2;
-
-        gl_FragColor=vec4(col,1.0);
-      }
-    `
+    vertexShader: ORB_CORE_VERTEX,
+    fragmentShader: ORB_CORE_FRAGMENT,
+    transparent: true
   });
+  const mesh = new THREE.Mesh(geometry, material);
+  scene.add(mesh);
 
-  scene.add(new THREE.Mesh(geometry, material));
+  const glowGeometry = new THREE.SphereGeometry(1.15, 64, 64);
+  const glowMaterial = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: ORB_GLOW_VERTEX,
+    fragmentShader: ORB_GLOW_FRAGMENT,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+  scene.add(glowMesh);
 
   function resize() {
     const page = document.getElementById('page-home');
     const w = page ? page.clientWidth : canvas.parentElement.clientWidth;
     const h = page ? page.clientHeight : canvas.parentElement.clientHeight;
     renderer.setSize(w, h, false);
-    uniforms.resolution.value.set(renderer.domElement.width, renderer.domElement.height);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
   }
   resize();
   window.addEventListener('resize', resize);
 
-  let rafId;
+  // Idle base rotation speed vs. active-state speed, per OrbState.current
+  const ROT_SPEED = { idle: 0.06, listening: 0.12, thinking: 0.22, speaking: 0.28, waking: 0.4 };
+  const COLOR_MIX = { idle: 0, listening: 0.05, thinking: 0.45, speaking: 1, waking: 0.7 };
+
+  // Wake power-up tween state (ease-out-back scale pop + rotation spike)
+  let wakeTweenStart = 0;
+  let wakeTweenActive = false;
+  const WAKE_TWEEN_MS = 700;
+  function easeOutBack(x) {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+  }
+  function triggerWakeTween() {
+    wakeTweenStart = performance.now();
+    wakeTweenActive = true;
+  }
+
+  let colorMixCur = 0;
+  let lastT = performance.now();
   function animate() {
-    rafId = requestAnimationFrame(animate);
-    uniforms.time.value += 0.05;
+    _shaderState.rafId = requestAnimationFrame(animate);
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastT) / 1000);
+    lastT = now;
+
+    uniforms.uTime.value += dt;
+
+    const amp = OrbAudio.tick(dt);
+    uniforms.uAmp.value += (amp - uniforms.uAmp.value) * 0.35;
+
+    const state = (typeof OrbState !== 'undefined' && OrbState.current) || 'idle';
+    const targetColorMix = COLOR_MIX[state] ?? 0;
+    colorMixCur += (targetColorMix - colorMixCur) * 0.06;
+    uniforms.uColorMix.value = colorMixCur;
+
+    let rotSpeed = ROT_SPEED[state] ?? ROT_SPEED.idle;
+
+    // Wake power-up: scale pop + rotation spike
+    if (wakeTweenActive) {
+      const elapsed = now - wakeTweenStart;
+      const p = Math.min(1, elapsed / WAKE_TWEEN_MS);
+      const eased = easeOutBack(p);
+      const scale = 0.3 + (1.0 - 0.3) * eased;
+      mesh.scale.setScalar(scale);
+      glowMesh.scale.setScalar(scale);
+      rotSpeed += (1 - p) * 1.2;
+      if (p >= 1) wakeTweenActive = false;
+    } else {
+      mesh.scale.setScalar(1);
+      glowMesh.scale.setScalar(1);
+    }
+
+    mesh.rotation.y += rotSpeed * dt;
+    mesh.rotation.x += rotSpeed * 0.3 * dt;
+    glowMesh.rotation.y = mesh.rotation.y;
+    glowMesh.rotation.x = mesh.rotation.x;
+
     renderer.render(scene, camera);
   }
-  animate();
 
-  _shaderState = { renderer, geometry, material, rafId, resize };
+  _shaderState = { renderer, geometry, material, glowGeometry, glowMaterial, rafId: null, resize, triggerWakeTween };
+  animate();
 }
 
 function stopShader() {
   if (!_shaderState) return;
-  const { renderer, geometry, material, rafId, resize } = _shaderState;
+  const { renderer, geometry, material, glowGeometry, glowMaterial, rafId, resize } = _shaderState;
   cancelAnimationFrame(rafId);
   window.removeEventListener('resize', resize);
   renderer.dispose();
   geometry.dispose();
   material.dispose();
+  glowGeometry && glowGeometry.dispose();
+  glowMaterial && glowMaterial.dispose();
   _shaderState = null;
 }
 </script>
