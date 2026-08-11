@@ -15,6 +15,7 @@ import json
 import time
 import asyncio
 import logging
+import secrets
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -51,6 +52,7 @@ class SpotifyAuth:
         self.client_secret = _load_secret("SPOTIFY_CLIENT_SECRET")
         self.redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8000/spotify/callback")
         self.token_path = os.path.expanduser("~/.config/agent/spotify_token.json")
+        self.state_path = os.path.expanduser("~/.config/agent/spotify_oauth_state.json")
         self._token_data = {}
         self._load_token()
 
@@ -75,14 +77,43 @@ class SpotifyAuth:
             pass
 
     def get_auth_url(self) -> str:
+        state = secrets.token_urlsafe(32)
+        try:
+            os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
+            with open(self.state_path, "w") as f:
+                json.dump({"state": state, "expires_at": time.time() + 600}, f)
+            os.chmod(self.state_path, 0o600)
+        except Exception:
+            logger.error("Failed to persist Spotify OAuth state")
         params = {
             "client_id": self.client_id,
             "response_type": "code",
             "redirect_uri": self.redirect_uri,
             "scope": SPOTIFY_SCOPES,
             "show_dialog": "true",
+            "state": state,
         }
         return f"{SPOTIFY_AUTH_URL}?{urlencode(params)}"
+
+    def verify_state(self, state: str) -> bool:
+        """Validate the CSRF `state` param from the OAuth callback against the
+        one issued in get_auth_url(). One-time use: consumed on success or failure."""
+        try:
+            with open(self.state_path) as f:
+                pending = json.load(f)
+        except Exception:
+            return False
+        finally:
+            try:
+                os.remove(self.state_path)
+            except Exception:
+                pass
+        expected = pending.get("state", "")
+        if not state or not expected:
+            return False
+        if time.time() >= pending.get("expires_at", 0):
+            return False
+        return secrets.compare_digest(state, expected)
 
     async def exchange_code(self, code: str) -> bool:
         async with httpx.AsyncClient(timeout=15.0) as client:

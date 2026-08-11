@@ -568,14 +568,17 @@ async def process_input_stream(request: ProcessRequest):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Persistent WebSocket for real-time agent events (status, reminders, health)."""
-    # Authenticate via query param: ws://host/ws?token=xxx
+    # Authenticate via short-lived session token: ws://host/ws?token=<session-token>
+    # The master API key is intentionally NOT accepted here (or via any query
+    # parameter) — query strings are commonly captured in server/proxy access
+    # logs and browser history, which is exactly the leak vector
+    # require_api_key's query-param policy is designed to avoid.
     token = websocket.query_params.get("token", "")
-    if not token or not secrets.compare_digest(token, AGENT_API_KEY):
-        # Also accept session tokens
-        valid_session = token in _sessions and (_time.time() - _sessions[token]) < 28800
-        if not valid_session:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
+    expiry = _sessions.get(token)
+    valid_session = expiry is not None and expiry > _time.time()
+    if not valid_session:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
 
     await ws_manager.connect(websocket)
     logger.info(f"WebSocket connected ({len(ws_manager.active_connections)} clients)")
@@ -812,13 +815,16 @@ async def spotify_auth():
         return HTMLResponse("<h2>Music module not available</h2>")
 
 @app.get("/spotify/callback")
-async def spotify_callback(code: str = ""):
+async def spotify_callback(code: str = "", state: str = ""):
     """Spotify OAuth callback — exchanges code for token."""
     if not code:
         return HTMLResponse("<h2>No authorization code received</h2>")
     try:
         from music import SpotifyPlayer
         player = SpotifyPlayer()
+        if not player.auth.verify_state(state):
+            return HTMLResponse('<html><body style="background:#050508;color:#e04060;font-family:sans-serif;text-align:center;padding:60px;">'
+                              '<h2>Invalid or expired login request</h2><p>Please restart the Spotify connection from /spotify/auth.</p></body></html>')
         success = await player.auth.exchange_code(code)
         if success:
             return HTMLResponse('<html><body style="background:#050508;color:#40e080;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;font-size:1.5rem;">'
@@ -1411,7 +1417,7 @@ async def health_pi(request: Request, api_key: Optional[str] = None):
     """
     # Validate API key if provided
     provided_key = api_key or request.headers.get("x-api-key") or request.headers.get("authorization", "").replace("Bearer ", "")
-    auth_ok = provided_key == AGENT_API_KEY
+    auth_ok = bool(provided_key) and secrets.compare_digest(provided_key, AGENT_API_KEY)
 
     server_ip = request.headers.get("host", "unknown")
 

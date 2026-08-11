@@ -574,7 +574,19 @@ class Deployer:
     @staticmethod
     async def deploy_copy(project: Project) -> str:
         """Copy project to a deploy directory (for nginx/apache serving)."""
-        deploy_path = os.path.join(CodeGenConfig.DEPLOY_DIR, project.name)
+        # Security: project.name comes from LLM-generated output and is not
+        # trusted. Reduce it to a bare directory name (no separators/traversal)
+        # and verify the resolved path stays inside DEPLOY_DIR before any
+        # destructive filesystem operation.
+        safe_name = os.path.basename((project.name or "").strip())
+        if not safe_name or safe_name in (".", ".."):
+            return "Copy failed: invalid project name"
+
+        deploy_root = os.path.realpath(CodeGenConfig.DEPLOY_DIR)
+        deploy_path = os.path.realpath(os.path.join(deploy_root, safe_name))
+        if not (deploy_path == deploy_root or deploy_path.startswith(deploy_root + os.sep)):
+            return "Copy failed: invalid project name"
+
         try:
             if os.path.exists(deploy_path):
                 shutil.rmtree(deploy_path)
@@ -599,8 +611,8 @@ class ShellExecutor:
     ALLOWED_COMMANDS = {
         "npm": ["install", "run", "build", "init", "test"],
         "pip": ["install", "freeze"],
-        "python3": None,  # Allow all python3 args
-        "node": None,
+        "python3": None,  # Allow python3 args except inline code execution (see DANGEROUS_INTERPRETER_FLAGS)
+        "node": None,     # Allow node args except inline code execution (see DANGEROUS_INTERPRETER_FLAGS)
         "git": ["init", "add", "commit", "status", "log", "diff"],
         "ls": None,
         "cat": None,
@@ -608,6 +620,16 @@ class ShellExecutor:
         "cp": None,
         "vercel": ["--yes", "--prod"],
         "netlify": ["deploy"],
+    }
+
+    # Security: python3/node are allowed to run with arbitrary script args
+    # (to run generated project files), but flags that make the interpreter
+    # execute an inline code string bypass SHELL_INJECTION_CHARS and
+    # BLOCKED_COMMANDS entirely (no shell metacharacters are needed), turning
+    # this "sandboxed" executor into unrestricted RCE. Block those flags.
+    DANGEROUS_INTERPRETER_FLAGS = {
+        "python3": {"-c"},
+        "node": {"-e", "--eval", "-p", "--print"},
     }
 
     BLOCKED_COMMANDS = [
@@ -664,6 +686,19 @@ class ShellExecutor:
                     "stderr": f"BLOCKED: Subcommand not allowed.",
                     "returncode": -1,
                 }
+
+        # Security: block interpreter flags that execute inline code
+        # (e.g. `python3 -c "..."`, `node -e "..."`) since they grant
+        # arbitrary code execution without needing any of the blocked
+        # shell metacharacters.
+        dangerous_flags = cls.DANGEROUS_INTERPRETER_FLAGS.get(base_cmd)
+        if dangerous_flags and any(part in dangerous_flags for part in cmd_parts[1:]):
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "BLOCKED: interpreter flag not allowed.",
+                "returncode": -1,
+            }
 
         # Security: Ensure cwd is within workspace
         if cwd:

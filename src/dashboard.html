@@ -1661,6 +1661,14 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/\n/g,'<br>');
 }
+function setAlbumArt(el, url, alt) {
+  if (!el) return;
+  el.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = alt || '';
+  el.appendChild(img);
+}
 function now() {
   return new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
 }
@@ -2124,7 +2132,7 @@ async function initSpotifyWebPlayer() {
       document.getElementById('musicPlayBtn').textContent = state.paused ? '▶' : '⏸';
       if (track.album.images && track.album.images.length) {
         const art = document.getElementById('albumArt');
-        art.innerHTML = `<img src="${track.album.images[0].url}" alt="Album art">`;
+        setAlbumArt(art, track.album.images[0].url, 'Album art');
       }
       if (state.duration > 0) {
         const pct = (state.position / state.duration * 100).toFixed(1);
@@ -2175,7 +2183,7 @@ async function updateNowPlaying() {
           track.artists.map(a=>a.name).join(', ') + (track.album.name ? ` • ${track.album.name}` : '');
         document.getElementById('musicPlayBtn').textContent = state.paused ? '▶' : '⏸';
         if (track.album.images && track.album.images.length) {
-          document.getElementById('albumArt').innerHTML = `<img src="${track.album.images[0].url}" alt="Album art">`;
+          setAlbumArt(document.getElementById('albumArt'), track.album.images[0].url, 'Album art');
         }
         if (state.duration > 0) {
           const pct = (state.position / state.duration * 100).toFixed(1);
@@ -2195,7 +2203,7 @@ async function updateNowPlaying() {
       document.getElementById('musicArtist').textContent=(d.artist||'')+(d.album?` • ${d.album}`:'');
       document.getElementById('musicPlayBtn').textContent=d.is_playing?'⏸':'▶';
       if (d.album_art) {
-        document.getElementById('albumArt').innerHTML=`<img src="${d.album_art}" alt="Album art">`;
+        setAlbumArt(document.getElementById('albumArt'), d.album_art, 'Album art');
       }
       if (d.duration_ms>0) {
         const pct=(d.progress_ms/d.duration_ms*100).toFixed(1);
@@ -2335,7 +2343,7 @@ async function loadSmartHomeDevices() {
     document.getElementById('homeDeviceGrid').innerHTML=controls.map(dev=>{
       const icon=icons[dev.type]||'📱';
       const isOn=dev.state==='on'||dev.state==='unlocked';
-      return `<div class="device-card${isOn?' on':''}" onclick="toggleDevice('${escHtml(dev.entity_id)}','${escHtml(dev.state)}')">
+      return `<div class="device-card${isOn?' on':''}" data-entity-id="${escHtml(dev.entity_id)}" data-state="${escHtml(dev.state)}">
         <div class="device-top">
           <div class="device-icon-wrap">${icon}</div>
           <div class="toggle ${isOn?'on':'off'}"><div class="toggle-thumb"></div></div>
@@ -2344,6 +2352,9 @@ async function loadSmartHomeDevices() {
         <div class="device-state">${isOn?'On':'Off'}</div>
       </div>`;
     }).join('');
+    document.getElementById('homeDeviceGrid').querySelectorAll('.device-card[data-entity-id]').forEach(card=>{
+      card.addEventListener('click', () => toggleDevice(card.dataset.entityId, card.dataset.state));
+    });
   } catch(e) { document.getElementById('homeDeviceGrid').innerHTML='<div class="empty-state" style="grid-column:1/-1">Could not load devices.</div>'; }
 }
 async function toggleDevice(entityId, currentState) {
@@ -2735,7 +2746,7 @@ async function updateFabState() {
       document.getElementById('fabArtist').textContent = d.artist || '—';
       document.getElementById('fabPlayBtn').textContent = d.is_playing ? '⏸' : '▶';
       if (d.album_art) {
-        document.getElementById('fabAlbumArt').innerHTML = `<img src="${d.album_art}" alt="">`;
+        setAlbumArt(document.getElementById('fabAlbumArt'), d.album_art, '');
       }
       if (d.duration_ms > 0) {
         const pct = (d.progress_ms / d.duration_ms * 100).toFixed(1);

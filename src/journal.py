@@ -72,7 +72,17 @@ class AboutMe:
         """Append a timestamped note to a file in about-me/."""
         try:
             ABOUT_ME_DIR.mkdir(parents=True, exist_ok=True)
-            target = ABOUT_ME_DIR / filename
+            # Sanitize filename: only allow a bare filename with no path
+            # components, so it can't escape ABOUT_ME_DIR via '..' or an
+            # absolute path.
+            safe_name = os.path.basename(filename)
+            if not safe_name or safe_name in (".", "..") or safe_name != filename:
+                logger.error(f"Rejected unsafe note filename: {filename!r}")
+                return False
+            target = (ABOUT_ME_DIR / safe_name).resolve()
+            if target.parent != ABOUT_ME_DIR.resolve():
+                logger.error(f"Rejected note filename outside ABOUT_ME_DIR: {filename!r}")
+                return False
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             entry = f"\n- [{timestamp}] {note.strip()}"
             with open(target, "a", encoding="utf-8") as f:

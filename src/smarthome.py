@@ -13,12 +13,20 @@ All communication stays on local network — no cloud dependency.
 import os
 import json
 import logging
+import re
 from typing import Optional
 from dataclasses import dataclass, field
 
 import httpx
 
 logger = logging.getLogger("smarthome")
+
+# Home Assistant entity_ids are always "<domain>.<object_id>" using only
+# lowercase letters, digits, and underscores. Domain/service names follow the
+# same charset. Reject anything else so caller-supplied strings can't inject
+# extra path segments (e.g. "/", "..") into the REST API URL.
+_ENTITY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+$")
+_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 @dataclass
@@ -86,6 +94,9 @@ class HomeAssistantClient:
         return devices
 
     async def get_device(self, entity_id: str) -> Optional[DeviceState]:
+        if not _ENTITY_ID_RE.match(entity_id or ""):
+            logger.warning(f"Rejected invalid entity_id: {entity_id!r}")
+            return None
         data = await self._api("GET", f"/states/{entity_id}")
         if not data:
             return None
@@ -99,6 +110,12 @@ class HomeAssistantClient:
         )
 
     async def call_service(self, domain: str, service: str, entity_id: str = None, data: dict = None) -> bool:
+        if not _SEGMENT_RE.match(domain or "") or not _SEGMENT_RE.match(service or ""):
+            logger.warning(f"Rejected invalid service call: domain={domain!r} service={service!r}")
+            return False
+        if entity_id is not None and not _ENTITY_ID_RE.match(entity_id):
+            logger.warning(f"Rejected invalid entity_id: {entity_id!r}")
+            return False
         body = data or {}
         if entity_id:
             body["entity_id"] = entity_id

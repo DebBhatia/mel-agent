@@ -59,10 +59,27 @@ PIPER_MODEL_DIR="$HOME/.local/share/piper-voices"
 mkdir -p "$PIPER_MODEL_DIR"
 if [ ! -f "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx" ]; then
     echo "Downloading Piper voice model..."
-    curl -sL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
+    # Pinned to a fixed commit (not the mutable "main" ref) with sha256 verification
+    # so the model can't silently change or be tampered with via CDN/DNS/MITM.
+    PIPER_MODEL_COMMIT="9f967d15e9ccdf43078586d1476ee70f314401bd"
+    PIPER_ONNX_SHA256="5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
+    PIPER_ONNX_JSON_SHA256="efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+
+    curl -sL "https://huggingface.co/rhasspy/piper-voices/resolve/${PIPER_MODEL_COMMIT}/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
         -o "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx"
-    curl -sL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
+    curl -sL "https://huggingface.co/rhasspy/piper-voices/resolve/${PIPER_MODEL_COMMIT}/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
         -o "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx.json"
+
+    echo "${PIPER_ONNX_SHA256}  $PIPER_MODEL_DIR/en_US-lessac-medium.onnx" | sha256sum -c - || {
+        echo "ERROR: Piper voice model checksum mismatch! Aborting." >&2
+        rm -f "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx" "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx.json"
+        exit 1
+    }
+    echo "${PIPER_ONNX_JSON_SHA256}  $PIPER_MODEL_DIR/en_US-lessac-medium.onnx.json" | sha256sum -c - || {
+        echo "ERROR: Piper voice model config checksum mismatch! Aborting." >&2
+        rm -f "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx" "$PIPER_MODEL_DIR/en_US-lessac-medium.onnx.json"
+        exit 1
+    }
 fi
 
 # 5. Create .env if not exists
@@ -98,6 +115,7 @@ WHISPER_MODEL=base
 # ELEVENLABS_API_KEY=
 # ELEVENLABS_VOICE_ID=
 ENVEOF
+    chmod 600 "$REPO_DIR/.env"
     echo ""
     echo "  !! IMPORTANT: Edit .env with your server IP and API key !!"
     echo "  Run: nano $REPO_DIR/.env"

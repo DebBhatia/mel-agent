@@ -82,9 +82,9 @@ if [ "$1" = "--service-account" ]; then
     fi
 
     # Validate it's a service account JSON
-    python3 -c "
-import json, sys
-data = json.load(open(r'$PY_PATH'))
+    PY_PATH="$PY_PATH" python3 -c "
+import json, os, sys
+data = json.load(open(os.environ['PY_PATH']))
 if 'client_email' not in data or 'private_key' not in data:
     print('Error: This does not look like a service account key file.')
     print('Expected fields: client_email, private_key')
@@ -95,7 +95,7 @@ print(f\"Service account: {data['client_email']}\")
     cp "$2" "$SA_FILE"
     chmod 600 "$SA_FILE"
 
-    SA_EMAIL=$(python3 -c "import json; print(json.load(open(r'$PY_SA_FILE'))['client_email'])")
+    SA_EMAIL=$(PY_SA_FILE="$PY_SA_FILE" python3 -c "import json, os; print(json.load(open(os.environ['PY_SA_FILE']))['client_email'])")
 
     echo ""
     echo "✅ Service account key installed to $SA_FILE"
@@ -120,7 +120,7 @@ if [ ! -f "$1" ]; then
     exit 1
 fi
 
-python3 -c "import json; json.load(open('$1'))" 2>/dev/null
+OAUTH_CREDS_PATH="$1" python3 -c "import json, os; json.load(open(os.environ['OAUTH_CREDS_PATH']))" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "Error: Invalid JSON file"
     exit 1

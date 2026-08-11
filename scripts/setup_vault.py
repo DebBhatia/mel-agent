@@ -8,7 +8,9 @@ After running:
   - Secrets are AES-encrypted in ~/.config/agent/vault.enc
   - Master key is owner-only at ~/.config/agent/master.key
   - .env is rewritten with secrets REMOVED (only non-sensitive config stays)
-  - A .env.bak backup is created first
+  - A temporary, owner-only .env.bak backup is created before rewriting and
+    removed again once the rewrite succeeds (secrets live only in the vault
+    afterward, never as a lingering plaintext copy on disk)
 """
 
 import os
@@ -90,7 +92,8 @@ def main():
     # ── 2. Backup original .env ───────────────────────────────────────────────
     backup_path = ENV_PATH + ".bak"
     shutil.copy2(ENV_PATH, backup_path)
-    print(f"\n[BAK] Backup saved: {backup_path}")
+    os.chmod(backup_path, 0o600)  # owner-only: backup still contains plaintext secrets
+    print(f"\n[BAK] Backup saved (owner-only, temporary): {backup_path}")
 
     # ── 3. Rewrite .env — strip secrets, leave non-sensitive config ───────────
     new_lines = []
@@ -104,6 +107,13 @@ def main():
     with open(ENV_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(new_lines) + "\n")
     print(f"[OK] .env rewritten -- {len(migrated)} secrets removed from plaintext")
+
+    # ── 3b. Remove the plaintext backup now that secrets are safely in the vault ──
+    # The backup's only purpose was to guard against failure during steps 1-3 above;
+    # keeping it around afterward would leave a permanent unencrypted copy of every
+    # secret the vault was just used to protect.
+    os.remove(backup_path)
+    print(f"[OK] Temporary backup removed: {backup_path}")
 
     # ── 4. Encrypt pii_mappings.json ──────────────────────────────────────────
     if os.path.exists(PII_PATH) and enc.fernet:
@@ -122,7 +132,6 @@ VAULT MIGRATION COMPLETE
   Encrypted vault : ~/.config/agent/vault.enc
   Master key      : ~/.config/agent/master.key (owner-only)
   Secrets migrated: {len(migrated)}
-  .env backup     : .env.bak
 
 IMPORTANT: Restart the server after running this script.
 The master key at ~/.config/agent/master.key is the ONLY
