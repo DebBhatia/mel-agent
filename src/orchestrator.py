@@ -45,6 +45,10 @@ def _load_secret(key: str, default: str = "") -> str:
 class Config:
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+    # Small, fast model used only for intent classification (a simple
+    # single-label task) -- keeps voice latency down without giving up
+    # OLLAMA_MODEL's quality for actual chat/command-generation use.
+    OLLAMA_CLASSIFY_MODEL = os.getenv("OLLAMA_CLASSIFY_MODEL", "llama3.2:1b")
     ANTHROPIC_API_KEY = _load_secret("ANTHROPIC_API_KEY")
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     WAKE_PHRASE = os.getenv("WAKE_PHRASE", "wake up daddy is home")
@@ -154,7 +158,7 @@ User request: """
                 response = await client.post(
                     f"{Config.OLLAMA_URL}/api/generate",
                     json={
-                        "model": Config.OLLAMA_MODEL,
+                        "model": Config.OLLAMA_CLASSIFY_MODEL,
                         "prompt": prompt,
                         "stream": False,
                         "format": "json",
