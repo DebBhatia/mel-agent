@@ -1598,7 +1598,15 @@ function connectWebSocket() {
     } catch (err) { console.warn('[WS] Parse error:', err); }
   };
 
-  _ws.onclose = () => {
+  _ws.onclose = (e) => {
+    if (e.code === 4001) {
+      // Session token invalid (e.g. the server restarted since this page
+      // loaded, wiping its in-memory sessions) -- retrying with the same
+      // dead token would loop forever. Reload to get a fresh one.
+      console.log('[WS] Session expired — reloading for a fresh token');
+      location.reload();
+      return;
+    }
     console.log('[WS] Disconnected — reconnecting in 3s');
     setTimeout(connectWebSocket, 3000);
   };
