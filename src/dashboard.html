@@ -2056,16 +2056,21 @@ async function sendChat() {
 // listening turn after turn with no further clicks -- auto-restarting
 // itself after each utterance, and pausing/resuming around Mel's own
 // speech so she doesn't hear (and respond to) herself.
+// Phrases (matched as a case-insensitive substring) that end an always-on
+// listening session -- mirrors wake_listener.py's SLEEP_PHRASES so the
+// dashboard behaves the same way the Pi voice pipeline already does.
+const SLEEP_PHRASES = ['goodbye mel','good bye mel','bye mel','bye, mel'];
+
+function _disableMic() {
+  micShouldBeActive = false;
+  recognition && recognition.stop();
+  ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('mic-enabled')});
+  OrbAudio._micStream?.getTracks().forEach(t=>t.stop()); OrbAudio.detach();
+}
 function toggleMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { showToast('Voice needs Chrome or Edge','error'); return; }
-  if (micShouldBeActive) {
-    micShouldBeActive = false;
-    recognition && recognition.stop();
-    ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('mic-enabled')});
-    OrbAudio._micStream?.getTracks().forEach(t=>t.stop()); OrbAudio.detach();
-    return;
-  }
+  if (micShouldBeActive) { _disableMic(); return; }
   micShouldBeActive = true;
   ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add('mic-enabled')});
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream => {
@@ -2088,6 +2093,15 @@ function _startRecognition() {
   };
   recognition.onresult = (e) => {
     const t = e.results[e.results.length-1][0].transcript;
+    const lower = t.toLowerCase();
+    if (SLEEP_PHRASES.some(p => lower.includes(p))) {
+      addMsg('commandLog','user',t);
+      addMsg('commandLog','mel','Goodbye!');
+      if (!voiceEnabled) toggleSpeaker();
+      StreamTTS.enqueue('Goodbye!');
+      _disableMic();
+      return;
+    }
     document.getElementById('commandInput').value = t;
     if (!voiceEnabled) toggleSpeaker();
     sendCommand();
