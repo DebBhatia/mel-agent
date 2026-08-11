@@ -108,6 +108,27 @@ async def _notify_server(event: str, mode: str | None = None):
         pass  # dashboard reactivity is cosmetic — never block/crash the voice loop
 
 
+async def _open_dashboard():
+    """
+    Open the dashboard in the default browser -- the "portal opens" moment
+    for the full homecoming wake phrase ("wake up, daddy is home"). The
+    plain command wake word ("Hey Mel") never calls this: it stays a
+    voice-only exchange through this machine's own mic/speakers, no
+    browser involved.
+    """
+    if platform.system() != "Darwin":
+        return  # `open` is macOS-only; skip silently on Linux/Pi
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "open", ORCHESTRATOR_URL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    except Exception as e:
+        logger.warning(f"Could not open dashboard: {e}")
+
+
 class WakeMode(Enum):
     """Which wake word was spoken determines the interaction mode."""
     HOMECOMING = "homecoming"  # "wake up daddy is home" → greeting + calendar
@@ -377,7 +398,30 @@ class AudioCapture:
             raise
 
     def _find_usb_mic(self) -> int:
-        """Auto-detect USB microphone."""
+        """
+        Pick the input device to capture from.
+
+        AUDIO_INPUT_DEVICE overrides auto-detection: set it to a device
+        index (e.g. "0") or a case-insensitive substring of the device
+        name (e.g. "webcam") to force a specific mic -- useful on
+        machines like a Mac Mini with no true built-in mic, where
+        multiple USB input devices may be present and the "closest one
+        to you" isn't necessarily the one auto-detection would pick.
+        """
+        override = os.getenv("AUDIO_INPUT_DEVICE", "").strip()
+        if override:
+            if override.isdigit():
+                idx = int(override)
+                info = self.audio.get_device_info_by_index(idx)
+                logger.info(f"Using configured input device: {info['name']} (index: {idx})")
+                return idx
+            for i in range(self.audio.get_device_count()):
+                info = self.audio.get_device_info_by_index(i)
+                if info["maxInputChannels"] > 0 and override.lower() in info["name"].lower():
+                    logger.info(f"Using configured input device: {info['name']} (index: {i})")
+                    return i
+            logger.warning(f"AUDIO_INPUT_DEVICE={override!r} matched no input device, falling back to auto-detect")
+
         for i in range(self.audio.get_device_count()):
             info = self.audio.get_device_info_by_index(i)
             if info["maxInputChannels"] > 0:
@@ -695,6 +739,7 @@ class VoiceAgent:
                         asyncio.create_task(_notify_server("wake", wake_mode.value))
 
                         if wake_mode == WakeMode.HOMECOMING:
+                            asyncio.create_task(_open_dashboard())
                             await self._homecoming_greeting()
                         else:
                             await self.tts.play_chime()
