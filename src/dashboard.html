@@ -204,6 +204,7 @@ button{cursor:pointer;border:none;background:none;color:inherit}
   border:1px solid var(--magenta);
   animation:ringExpand 2s cubic-bezier(0,.2,.2,1) infinite;
 }
+.hdr-btn.mic-enabled{color:var(--cyan);background:rgba(0,217,255,0.08);box-shadow:inset 0 0 0 1px rgba(0,217,255,0.35)}
 .hdr-divider{width:1px;height:24px;background:rgba(255,255,255,0.1);margin:0 6px}
 .avatar{
   width:36px;height:36px;border-radius:50%;
@@ -1546,6 +1547,7 @@ const API = window.location.origin;
 let isAwake = false;
 let voiceEnabled = false;
 let micActive = false;
+let micShouldBeActive = false;
 let isSpeaking = false;
 let recognition = null;
 let currentAudio = null;
@@ -1729,11 +1731,84 @@ function addStreamingMsg(logId) {
   return row.querySelector('.msg-bubble');
 }
 
+// Split at the last complete sentence boundary. Returns [ready, remainder] --
+// ready holds zero or more complete sentences, remainder is the trailing
+// incomplete one still waiting for more streamed tokens. Mirrors
+// wake_listener.py's _split_ready_sentences so both surfaces speak as the
+// reply arrives instead of waiting for the whole thing.
+function splitReadySentences(buffer) {
+  const re = /[.!?](?:\s|$)/g;
+  let lastEnd = 0, m;
+  while ((m = re.exec(buffer)) !== null) lastEnd = m.index + m[0].length;
+  return [buffer.slice(0, lastEnd), buffer.slice(lastEnd)];
+}
+
+// Speaks enqueued sentences one at a time (synthesizing the next while
+// the current one plays would over-complicate ordering for little gain
+// here since sentences are short; this keeps strict in-order playback).
+const StreamTTS = {
+  queue: [], playing: false, active: false,
+  enqueue(text) {
+    text = (text || '').trim();
+    if (!text || !voiceEnabled) return;
+    this.queue.push(text);
+    if (!this.playing) this._pump();
+  },
+  async _pump() {
+    this.playing = true;
+    if (!this.active) { this.active = true; setSpeakingState(true, 'Mel is speaking...'); }
+    while (this.queue.length) {
+      await this._speakOne(this.queue.shift());
+    }
+    this.playing = false;
+    this.active = false;
+    setSpeakingState(false);
+  },
+  async _speakOne(text) {
+    if (elevenlabsAvailable) {
+      try {
+        const res = await fetch(`${API}/tts`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN},
+          body: JSON.stringify({text})
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          await new Promise((resolve) => {
+            currentAudio = new Audio(url);
+            currentAudio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; resolve(); };
+            currentAudio.onerror = () => { URL.revokeObjectURL(url); currentAudio = null; resolve(); };
+            try {
+              const ctx = getAudioCtx();
+              const src = ctx.createMediaElementSource(currentAudio);
+              const analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+              src.connect(analyser); analyser.connect(ctx.destination); // MUST connect to destination or audio goes silent
+              OrbAudio.attachAnalyser(analyser);
+            } catch (e) { OrbAudio.setSynthetic(speakingEnvelope); }
+            currentAudio.play().catch(resolve);
+          });
+          return;
+        }
+      } catch (e) {}
+    }
+    if (!window.speechSynthesis) return;
+    await new Promise((resolve) => {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = getBestVoice(); if (v) u.voice = v;
+      u.lang = 'en-US'; u.rate = 1.0; u.pitch = 1.05; u.volume = 1.0;
+      u.onend = resolve; u.onerror = resolve;
+      window.speechSynthesis.speak(u);
+    });
+  }
+};
+
 async function streamResponse(logId, text) {
   const bubble = addStreamingMsg(logId);
   if (!bubble) return '';
   const log = document.getElementById(logId);
   let fullText = '';
+  let ttsBuffer = '';
 
   try {
     const res = await fetch(`${API}/process/stream`, {
@@ -1764,12 +1839,17 @@ async function streamResponse(logId, text) {
           if (data.token) {
             if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
             fullText += data.token;
+            ttsBuffer += data.token;
             bubble.innerHTML = escHtml(fullText);
             if (log) log.scrollTop = log.scrollHeight;
+            const [ready, rest] = splitReadySentences(ttsBuffer);
+            if (ready) { StreamTTS.enqueue(ready); ttsBuffer = rest; }
           }
         } catch (e) {}
       }
     }
+
+    if (ttsBuffer.trim()) StreamTTS.enqueue(ttsBuffer);
 
     bubble.classList.remove('streaming');
     if (firstToken) bubble.innerHTML = escHtml(fullText || '(no response)');
@@ -1841,7 +1921,13 @@ function setSpeakingState(speaking, text='Mel is speaking...') {
     if (b) { if (speaking) b.classList.add('active'); else b.classList.remove('active'); }
   });
   setOrbState(speaking ? 'speaking' : 'idle');
-  if (speaking) OrbAudio.setSynthetic(speakingEnvelope);
+  if (speaking) {
+    OrbAudio.setSynthetic(speakingEnvelope);
+    // Stop listening while Mel talks so the mic doesn't hear (and reply to) her own voice.
+    if (micActive) { recognition && recognition.stop(); }
+  } else if (micShouldBeActive && !micActive) {
+    setTimeout(() => { if (micShouldBeActive && !micActive && !isSpeaking) _startRecognition(); }, 300);
+  }
 }
 function setListeningState(listening) {
   const bar = document.getElementById('voiceBar');
@@ -1925,8 +2011,7 @@ async function sendCommand() {
       await checkHealth();
       if (r.ok) { const d=await r.json(); const g=d.message||''; if(g){addMsg('commandLog','mel',g);speakResponse(g);} }
     }
-    const reply = await streamResponse('commandLog', text);
-    if (reply) speakResponse(reply);
+    await streamResponse('commandLog', text); // speaks sentence-by-sentence as it streams, via StreamTTS
   } catch(e) { addMsg('commandLog','mel',`Network error: ${e.message}`,true); }
   await smartResume();
 }
@@ -1961,49 +2046,68 @@ async function sendChat() {
       return;
     }
     if (!isAwake) { await fetch(`${API}/wake`,{method:'POST',headers:{'X-Session-Token':SESSION_TOKEN}}); await checkHealth(); }
-    const reply = await streamResponse('chatLog', text);
-    if (reply) speakResponse(reply);
+    await streamResponse('chatLog', text); // speaks sentence-by-sentence as it streams, via StreamTTS
   } catch(e) { addMsg('chatLog','mel',`Network error: ${e.message}`,true); }
   await smartResume();
 }
 
 // ═══ VOICE INPUT ══════════════════════════════════════════════════════
+// Always-on listening: one click arms it (mic-enabled), then it keeps
+// listening turn after turn with no further clicks -- auto-restarting
+// itself after each utterance, and pausing/resuming around Mel's own
+// speech so she doesn't hear (and respond to) herself.
 function toggleMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { showToast('Voice needs Chrome or Edge','error'); return; }
-  if (micActive) { recognition && recognition.stop(); return; }
+  if (micShouldBeActive) {
+    micShouldBeActive = false;
+    recognition && recognition.stop();
+    ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('mic-enabled')});
+    OrbAudio._micStream?.getTracks().forEach(t=>t.stop()); OrbAudio.detach();
+    return;
+  }
+  micShouldBeActive = true;
+  ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add('mic-enabled')});
+  navigator.mediaDevices.getUserMedia({audio:true}).then(stream => {
+    OrbAudio._micStream = stream;
+    const src = getAudioCtx().createMediaStreamSource(stream);
+    const analyser = getAudioCtx().createAnalyser(); analyser.fftSize = 256;
+    src.connect(analyser);
+    OrbAudio.attachAnalyser(analyser);
+  }).catch(() => OrbAudio.setSynthetic(listeningEnvelope));
+  _startRecognition();
+}
+function _startRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   recognition = new SR();
-  recognition.lang='en-US'; recognition.interimResults=false; recognition.maxAlternatives=1;
+  recognition.lang='en-US'; recognition.continuous=true; recognition.interimResults=false; recognition.maxAlternatives=1;
   recognition.onstart = () => {
     micActive=true;
     ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add('mic-active','active')});
     setListeningState(true);
-    navigator.mediaDevices.getUserMedia({audio:true}).then(stream => {
-      OrbAudio._micStream = stream;
-      const src = getAudioCtx().createMediaStreamSource(stream);
-      const analyser = getAudioCtx().createAnalyser(); analyser.fftSize = 256;
-      src.connect(analyser);
-      OrbAudio.attachAnalyser(analyser);
-    }).catch(() => OrbAudio.setSynthetic(listeningEnvelope));
   };
   recognition.onresult = (e) => {
-    const t = e.results[0][0].transcript;
+    const t = e.results[e.results.length-1][0].transcript;
     document.getElementById('commandInput').value = t;
     if (!voiceEnabled) toggleSpeaker();
     sendCommand();
   };
   recognition.onerror = (e) => {
-    const m = e.error==='not-allowed' ? 'Microphone permission denied' :
-               e.error==='network' ? 'Speech recognition needs internet' : `Mic error: ${e.error}`;
-    showToast(m,'error',5000);
+    // 'no-speech'/'aborted' fire routinely in always-on mode (silence
+    // timeout, or our own pause-for-speech stop()) -- not real errors.
+    if (e.error==='no-speech' || e.error==='aborted') return;
+    if (e.error==='not-allowed') { micShouldBeActive=false; showToast('Microphone permission denied','error',5000); return; }
+    if (e.error==='network') showToast('Speech recognition needs internet','error',5000);
   };
   recognition.onend = () => {
     micActive=false;
     ['micBtn','micBtnTop'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('mic-active','active')});
     setListeningState(false);
-    OrbAudio._micStream?.getTracks().forEach(t=>t.stop()); OrbAudio.detach();
+    if (micShouldBeActive && !isSpeaking) {
+      setTimeout(() => { if (micShouldBeActive && !micActive && !isSpeaking) _startRecognition(); }, 250);
+    }
   };
-  recognition.start();
+  try { recognition.start(); } catch(e) {}
 }
 
 // ═══ VOICE OUTPUT ════════════════════════════════════════════════════
