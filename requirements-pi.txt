@@ -6,3 +6,7 @@ PyAudio>=0.2.14
 openai-whisper>=20240930
 pvporcupine>=4.0.0
 onnxruntime>=1.19.0
+
+# openWakeWord — free, offline wake word engine, no account needed.
+# Used automatically as a fallback if PICOVOICE_ACCESS_KEY isn't set.
+openwakeword>=0.6.0
