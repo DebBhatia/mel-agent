@@ -45,6 +45,18 @@ CHUNK_SIZE = 1280  # 80ms at 16kHz
 SILENCE_THRESHOLD = 500
 SILENCE_DURATION = 2.0  # seconds of silence = end of command
 MAX_COMMAND_DURATION = 30.0  # max seconds to record a single command
+# Barge-in: RMS level the mic has to sustain, while Mel is talking, before
+# it counts as the user interrupting her. Set well above SILENCE_THRESHOLD
+# because there's no acoustic echo cancellation here (unlike the browser
+# dashboard) -- Mel's own voice bleeding into the mic from the speakers is
+# the main false-positive risk on shared hardware. Raise this (or set a
+# lower one with headphones/a directional mic that doesn't pick up the
+# speaker) via BARGE_IN_THRESHOLD if she's cutting herself off, or getting
+# talked over too easily.
+BARGE_IN_THRESHOLD = int(os.getenv("BARGE_IN_THRESHOLD", str(SILENCE_THRESHOLD * 4)))
+# Consecutive above-threshold chunks required before committing to a
+# barge-in -- debounces a single click/pop/bump into a false interrupt.
+BARGE_IN_MIN_CHUNKS = 3  # ~240ms at CHUNK_SIZE/SAMPLE_RATE
 # Phrases (matched as a substring, case-insensitive) that end a conversation
 # session and put the listener back to sleep, waiting for the wake word again.
 SLEEP_PHRASES = ("goodbye mel", "good bye mel", "bye mel", "bye, mel")
@@ -460,6 +472,35 @@ class AudioCapture:
         except Exception:
             pass
 
+    async def watch_for_speech(self, threshold: float, min_consecutive: int, stop_event: asyncio.Event):
+        """
+        Runs concurrently with TTS playback: reads mic chunks on a background
+        thread (so the blocking PyAudio read doesn't stall the event loop --
+        the playback subprocess needs the loop free to run at the same time)
+        until either `min_consecutive` chunks in a row exceed `threshold`
+        RMS, or `stop_event` fires because playback finished on its own.
+
+        Returns (triggered, chunks) -- chunks is the audio already read
+        while watching, so a caller that goes on to capture the rest of the
+        interrupting utterance can prepend it instead of losing the first
+        ~breath of speech to the debounce window.
+        """
+        loop = asyncio.get_event_loop()
+        consecutive = 0
+        chunks: list[np.ndarray] = []
+        while not stop_event.is_set():
+            chunk = await loop.run_in_executor(None, self.read_chunk)
+            chunks.append(chunk)
+            rms = np.sqrt(np.mean(chunk.astype(np.float32) ** 2))
+            if rms > threshold:
+                consecutive += 1
+                if consecutive >= min_consecutive:
+                    return True, chunks
+            else:
+                consecutive = 0
+                chunks = []  # that burst wasn't the start of real speech
+        return False, chunks
+
     def stop(self):
         """Clean up audio resources."""
         if self.stream:
@@ -574,9 +615,18 @@ class TextToSpeech:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await proc.wait()
         except FileNotFoundError:
             logger.error(f"Audio player not found ({cmd[0]}). Install it to enable playback.")
+            return
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            # Barge-in: caller cancelled us mid-playback -- kill the player
+            # process immediately so stale audio doesn't keep coming out of
+            # the speakers after the user started talking.
+            proc.kill()
+            await proc.wait()
+            raise
 
     async def synthesize(self, text: str) -> str | None:
         """
@@ -627,7 +677,11 @@ class TextToSpeech:
         """Use ElevenLabs API (cloud, better quality)."""
         import httpx
         api_key = os.getenv("ELEVENLABS_API_KEY", "")
-        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+        # Same fallback ID as server.py's /tts endpoint -- if ELEVENLABS_VOICE_ID
+        # is ever unset on this machine, both surfaces drop back to the same
+        # voice instead of the dashboard and the native listener silently
+        # diverging to two different identities.
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "eXpIbVcVbLo8ZJQDlDnl")
 
         if not api_key:
             logger.warning("ElevenLabs API key not set")
@@ -638,7 +692,11 @@ class TextToSpeech:
                 response = await client.post(
                     f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
                     headers={"xi-api-key": api_key},
-                    json={"text": text, "model_id": "eleven_multilingual_v2"},
+                    # language_code pinned: sentences are synthesized one at a
+                    # time as they stream in, and a short/odd trailing
+                    # fragment can otherwise get its language auto-detected
+                    # wrong (see server.py's /tts for the same fix).
+                    json={"text": text, "model_id": "eleven_multilingual_v2", "language_code": "en"},
                 )
                 if response.status_code == 200:
                     # Use secure temp file instead of predictable path
@@ -905,7 +963,7 @@ class VoiceAgent:
             items = ", ".join(lines[:-1]) + f", and {lines[-1]}"
             return f"You have {count} things today: {items}."
 
-    async def _capture_command_text(self, drain_first: bool = True) -> str:
+    async def _capture_command_text(self, drain_first: bool = True, preroll: list | None = None) -> str:
         """
         Record until the user stops talking and transcribe it locally.
 
@@ -915,12 +973,17 @@ class VoiceAgent:
         sitting in the buffer and we want to keep it. Do drain between
         turns in a conversation, where the buffered audio is stale leftover
         from Mel's own spoken response, not something to capture.
+
+        preroll: audio chunks already captured before this call started
+        (e.g. the burst of speech a barge-in watcher used to detect the
+        interruption) to prepend, so the first ~breath of what the user
+        said isn't lost.
         """
         logger.info("Listening for command...")
         if drain_first:
             self.audio.drain()
         asyncio.create_task(_notify_server("listening_start"))
-        audio_buffer = []
+        audio_buffer = list(preroll) if preroll else []
         silence_count = 0
         max_silence_chunks = int(SILENCE_DURATION * SAMPLE_RATE / CHUNK_SIZE)
         max_total_chunks = int(MAX_COMMAND_DURATION * SAMPLE_RATE / CHUNK_SIZE)
@@ -956,6 +1019,9 @@ class VoiceAgent:
         command = await self._capture_command_text(drain_first=True)
         if command:
             await self._stream_reply(command)
+            # A barge-in during this one-shot reply is intentionally not
+            # chained further here -- unlike _converse_until_goodbye, this
+            # path is a single follow-up, not the main conversation loop.
 
     async def _converse_until_goodbye(self):
         """
@@ -963,11 +1029,19 @@ class VoiceAgent:
         commands -- no need to repeat "Hey Mel" between turns -- replying to
         each right away, until the user says a sleep phrase (e.g. "goodbye
         mel") or goes quiet for a few turns in a row.
+
+        If the user talks over a reply (barge-in), it's cut off immediately
+        and whatever they said becomes the next turn directly -- no extra
+        capture cycle, since _stream_reply already captured it live.
         """
         consecutive_silent = 0
         first_turn = True
+        pending_command = ""
         while True:
-            command = await self._capture_command_text(drain_first=not first_turn)
+            if pending_command:
+                command, pending_command = pending_command, ""
+            else:
+                command = await self._capture_command_text(drain_first=not first_turn)
             first_turn = False
 
             if not command:
@@ -982,7 +1056,7 @@ class VoiceAgent:
                 await self.tts.speak("Goodbye!")
                 return
 
-            await self._stream_reply(command)
+            _, pending_command = await self._stream_reply(command)
 
     async def _send_to_orchestrator(self, command: str) -> str:
         """Send command to the orchestrator API with auth and retry."""
@@ -1024,30 +1098,89 @@ class VoiceAgent:
 
         return "Connection failed."
 
-    async def _stream_reply(self, command: str) -> str:
+    async def _play_with_barge_in(self, path: str) -> tuple[bool, str]:
+        """
+        Play one synthesized reply file while concurrently watching the mic
+        for the user talking over it. If they do, playback is killed
+        immediately and the interrupting speech is captured and transcribed
+        right away instead of being thrown away and waiting for a fresh
+        wake-word-free capture cycle.
+
+        Returns (interrupted, heard_text). heard_text is "" if playback
+        simply finished on its own (no barge-in).
+        """
+        stop_watching = asyncio.Event()
+        play_task = asyncio.create_task(self.tts._play_file(path))
+        watch_task = asyncio.create_task(
+            self.audio.watch_for_speech(BARGE_IN_THRESHOLD, BARGE_IN_MIN_CHUNKS, stop_watching)
+        )
+
+        done, _ = await asyncio.wait({play_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
+
+        if watch_task in done and watch_task.result()[0]:
+            # Barged in -- kill playback now, then keep listening to capture
+            # the rest of what they're saying (seeded with the audio the
+            # watcher already heard) instead of discarding it.
+            _, preroll = watch_task.result()
+            play_task.cancel()
+            try:
+                await play_task
+            except asyncio.CancelledError:
+                pass
+            heard = await self._capture_command_text(drain_first=False, preroll=preroll)
+            return True, heard
+
+        # Playback finished on its own -- stop the watcher.
+        stop_watching.set()
+        watch_task.cancel()
+        try:
+            await watch_task
+        except asyncio.CancelledError:
+            pass
+        return False, ""
+
+    async def _stream_reply(self, command: str) -> tuple[str, str]:
         """
         Stream the orchestrator's response and speak it sentence-by-sentence
         as it arrives, synthesizing each sentence's audio while the previous
         one is still playing -- instead of waiting for the entire reply
         before saying anything. Falls back to a spoken error message (never
         raises) so callers can treat this like _send_to_orchestrator().
+
+        Each sentence plays with a concurrent barge-in watch (see
+        _play_with_barge_in): if the user talks over it, playback is killed,
+        the rest of this reply is dropped, and the LLM stream is stopped
+        early since nobody's listening to it anymore.
+
+        Returns (full_response, next_command). next_command is "" unless the
+        user barged in, in which case it's what they said during the
+        interruption -- the caller can feed it straight into the next turn
+        instead of running a separate capture cycle for it.
         """
         import httpx
 
         if not AGENT_API_KEY:
             logger.error("AGENT_API_KEY not set — cannot authenticate with orchestrator")
             await self.tts.speak("I need an API key to connect. Please set AGENT_API_KEY in your environment.")
-            return ""
+            return "", ""
 
         playback_queue: asyncio.Queue = asyncio.Queue()
+        interrupted = asyncio.Event()
+        next_command = ""
 
         async def player():
+            nonlocal next_command
             while True:
                 path = await playback_queue.get()
                 if path is None:
                     break
                 try:
-                    await self.tts._play_file(path)
+                    if interrupted.is_set():
+                        continue  # reply was cut off -- drain and discard the rest
+                    barged_in, heard = await self._play_with_barge_in(path)
+                    if barged_in:
+                        next_command = heard
+                        interrupted.set()
                 finally:
                     try:
                         os.unlink(path)
@@ -1055,8 +1188,11 @@ class VoiceAgent:
                         pass
 
         async def enqueue(text: str):
-            text = text.strip()
-            if not text:
+            # Strip markdown images (e.g. a generated-image response) -- there's
+            # no dashboard here to show them on, so speaking the raw
+            # "![alt](url)" syntax would just be noise.
+            text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text).strip()
+            if not text or interrupted.is_set():
                 return
             path = await self.tts.synthesize(text)
             if path:
@@ -1079,6 +1215,8 @@ class VoiceAgent:
                     else:
                         event_type = None
                         async for line in resp.aiter_lines():
+                            if interrupted.is_set():
+                                break  # user barged in -- stop pulling a reply nobody's hearing
                             if not line:
                                 continue
                             if line.startswith("event:"):
@@ -1108,7 +1246,7 @@ class VoiceAgent:
             if not full_response:
                 await enqueue("Something went wrong. Please try again.")
 
-        if buffer.strip():
+        if buffer.strip() and not interrupted.is_set():
             await enqueue(buffer)
 
         await playback_queue.put(None)
@@ -1116,7 +1254,7 @@ class VoiceAgent:
             await player_task
         finally:
             asyncio.create_task(_notify_server("speaking_stop"))
-        return full_response
+        return full_response, next_command
 
 
 # ─────────────────────────────────────────────

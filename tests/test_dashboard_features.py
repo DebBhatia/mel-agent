@@ -193,21 +193,30 @@ class TestTTS:
 
     @pytest.mark.asyncio
     async def test_tts_with_mock_elevenlabs(self, auth_headers):
-        """Mock ElevenLabs API to verify TTS returns audio/mpeg."""
+        """Mock ElevenLabs's streaming endpoint to verify TTS returns audio/mpeg.
+
+        server.py's /tts proxies ElevenLabs via client.build_request() +
+        client.send(req, stream=True) (not client.post()) so the response can
+        be forwarded to the browser as it arrives -- the mock mirrors that
+        call shape rather than the old buffered client.post() one.
+        """
         fake_audio = b"\xff\xfb\x90\x00" * 100  # Fake MP3 bytes
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.content = fake_audio
+        async def _aiter_bytes():
+            yield fake_audio
 
-        # Create a mock httpx client that supports async context manager
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_upstream = MagicMock()
+        mock_upstream.status_code = 200
+        mock_upstream.aiter_bytes = _aiter_bytes
+        mock_upstream.aclose = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.build_request = MagicMock(return_value=MagicMock())
+        mock_client.send = AsyncMock(return_value=mock_upstream)
+        mock_client.aclose = AsyncMock()
 
         with patch.dict(os.environ, {"ELEVENLABS_API_KEY": "test-key-123"}):
-            with patch("httpx.AsyncClient", return_value=mock_client) as mock_cls:
+            with patch("httpx.AsyncClient") as mock_cls:
                 # Ensure test's own AsyncClient still works by only mocking
                 # when timeout=30.0 is passed (as in server.py TTS endpoint)
                 original_init = AsyncClient.__init__
@@ -235,19 +244,22 @@ class TestTTS:
         """Mock ElevenLabs and verify markdown gets stripped from TTS text."""
         captured_body = {}
 
-        fake_response = MagicMock()
-        fake_response.status_code = 200
-        fake_response.content = b"\xff\xfb\x90\x00"
+        async def _aiter_bytes():
+            yield b"\xff\xfb\x90\x00"
 
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_upstream = MagicMock()
+        mock_upstream.status_code = 200
+        mock_upstream.aiter_bytes = _aiter_bytes
+        mock_upstream.aclose = AsyncMock()
 
-        async def capture_post(url, **kwargs):
+        def capture_build_request(method, url, **kwargs):
             captured_body.update(kwargs.get("json", {}))
-            return fake_response
+            return MagicMock()
 
-        mock_client.post = capture_post
+        mock_client = MagicMock()
+        mock_client.build_request = capture_build_request
+        mock_client.send = AsyncMock(return_value=mock_upstream)
+        mock_client.aclose = AsyncMock()
 
         real_cls = AsyncClient
         original_init = AsyncClient.__init__

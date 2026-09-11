@@ -6,7 +6,9 @@ All PII stays local. Only sanitized requests go to Claude.
 """
 
 import os
+import re
 import json
+import secrets
 import asyncio
 import logging
 from datetime import datetime
@@ -16,6 +18,9 @@ from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
+
+from router import ModelRouter
+from model_gateway import ModelGateway
 
 load_dotenv()
 
@@ -51,6 +56,12 @@ class Config:
     OLLAMA_CLASSIFY_MODEL = os.getenv("OLLAMA_CLASSIFY_MODEL", "llama3.2:1b")
     ANTHROPIC_API_KEY = _load_secret("ANTHROPIC_API_KEY")
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    # OpenAI: image generation + web-search-grounded answers. Optional -- both
+    # capabilities degrade gracefully (image requests explain they're
+    # unavailable; search falls back to free DuckDuckGo) if unset.
+    OPENAI_API_KEY = _load_secret("OPENAI_API_KEY")
+    OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+    OPENAI_SEARCH_MODEL = os.getenv("OPENAI_SEARCH_MODEL", "gpt-4.1")
     WAKE_PHRASE = os.getenv("WAKE_PHRASE", "wake up daddy is home")
     AGENT_NAME = os.getenv("AGENT_NAME", "Mel")
     USER_NAME = os.getenv("USER_NAME", "Deb")
@@ -310,6 +321,16 @@ User request: """
             text
         ):
             return {"category": "CALENDAR", "intent": "manage", "requires_cloud": False, "summary": summary}
+        elif (any(kw in text for kw in ["picture of", "image of", "photo of", "illustration of",
+                                        "drawing of", "draw me", "draw a", "generate an image",
+                                        "generate a picture", "generate a photo", "make an image",
+                                        "make a picture", "make a photo", "create an image",
+                                        "create a picture", "create a photo"])
+              or re.search(r'\b(draw|sketch)\b.{0,25}\b(of|a|an)\b', text)):
+            # Checked before CODE below -- "generate"/"create" would otherwise
+            # misfire an image request ("generate an image of a cat") into
+            # the code-scaffolding handler.
+            return {"category": "IMAGE", "intent": "generate", "requires_cloud": False, "summary": summary}
         elif any(kw in text for kw in ["build", "create", "generate", "make me a", "code", "website", "web app", "mobile app", "script", "dashboard", "landing page"]):
             return {"category": "CODE", "intent": "generate", "requires_cloud": True, "summary": summary}
         elif any(kw in text for kw in ["book", "reservation", "table", "hotel", "reserve"]):
@@ -424,7 +445,15 @@ class ClaudeClient:
         self.api_key = Config.ANTHROPIC_API_KEY
         self.model = Config.CLAUDE_MODEL
         self.sanitizer = PIISanitizer()
-        self.conversation_history = []  # Multi-turn memory for Claude
+        # Multi-turn memory for Claude, keyed by caller session id so the
+        # dashboard (browser session token) and the native listener (no
+        # session token, fixed "api" bucket) don't bleed into each other's
+        # conversation context.
+        self.conversation_history: dict[str, list] = {}
+        # Reused across every call instead of opening a fresh connection (and
+        # paying a new TLS handshake) per request -- httpx keeps the
+        # underlying connection alive between calls on the same client.
+        self._http = httpx.AsyncClient()
         # Initialize audit logger
         try:
             from security import AuditLogger, EnhancedPIISanitizer
@@ -434,15 +463,26 @@ class ClaudeClient:
             self.audit = None
             self.enhanced_sanitizer = None
 
-    def _mel_system_prompt(self) -> str:
-        """Build Mel's persona system prompt with live context."""
+    def _current_time_str(self) -> str:
         try:
             import pytz
             tz = pytz.timezone(Config.TIMEZONE)
             now = datetime.now(tz)
         except Exception:
             now = datetime.now()
-        time_str = now.strftime("%I:%M %p on %A, %B %d, %Y %Z").lstrip("0")
+        return now.strftime("%I:%M %p on %A, %B %d, %Y %Z").lstrip("0")
+
+    def _mel_system_prompt(self, include_time: bool = True) -> str:
+        """Build Mel's persona system prompt with live context.
+
+        include_time=False omits the live timestamp sentence so the rest of
+        the prompt is byte-identical across calls within a session -- callers
+        that want Anthropic prompt caching on this block (see _prepare_converse
+        and reason()) pass False here and append the time as a separate,
+        uncached block instead, since embedding a minute-resolution timestamp
+        inline would invalidate the cache on almost every turn.
+        """
+        time_sentence = f"Current date and time: {self._current_time_str()}. " if include_time else ""
 
         # Load personal context from about-me folder (silent fail if not available)
         about_me_context = ""
@@ -458,7 +498,7 @@ class ClaudeClient:
             f"You are {Config.AGENT_NAME}, {Config.USER_NAME}'s personal assistant. "
             f"{Config.USER_NAME} is male — always use he/him pronouns when referring to him. "
             f"You talk like a close friend who happens to know everything — direct, casual, no fluff. "
-            f"Current date and time: {time_str}. "
+            f"{time_sentence}"
             f"\n\nTone rules (never break these):"
             f"\n- Give the actual answer immediately. No 'great question!' or 'I'd be happy to help' ever."
             f"\n- Never ask clarifying questions unless the request is genuinely impossible to answer without them."
@@ -477,7 +517,7 @@ class ClaudeClient:
             f"{about_me_context}"
         )
 
-    def _prepare_converse(self, user_message: str, extra_context: str = ""):
+    def _prepare_converse(self, session_id: str, user_message: str, extra_context: str = ""):
         """Shared prep for converse/converse_stream: sanitize input, build payload."""
         safe_msg = self.sanitizer.sanitize(user_message)
         if self.enhanced_sanitizer:
@@ -494,8 +534,9 @@ class ClaudeClient:
         if extra_context:
             content = f"{extra_context}\n\n{safe_msg}"
 
-        # Build messages with conversation history for multi-turn context
-        messages = list(self.conversation_history[-10:])
+        # Build messages with this session's conversation history for multi-turn context
+        history = self.conversation_history.get(session_id, [])
+        messages = list(history[-10:])
         messages.append({"role": "user", "content": content})
 
         headers = {
@@ -506,85 +547,109 @@ class ClaudeClient:
         payload = {
             "model": self.model,
             "max_tokens": 1024,
-            "system": self._mel_system_prompt(),
+            # Persona/tone/about-me is identical every turn of a session, so
+            # it's cached (cuts real time-to-first-token on the 2nd+ turn
+            # instead of reprocessing it fresh and identically every time).
+            # The live timestamp is a separate, uncached block -- inlining it
+            # in the cached block would invalidate the cache almost every turn.
+            "system": [
+                {
+                    "type": "text",
+                    "text": self._mel_system_prompt(include_time=False),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": f"Current date and time: {self._current_time_str()}."},
+            ],
             "messages": messages,
         }
         return content, headers, payload
 
-    def _update_converse_history(self, content: str, response_text: str):
-        """Append a turn to conversation history (stores sanitized text only)."""
-        self.conversation_history.append({"role": "user", "content": content})
-        self.conversation_history.append({"role": "assistant", "content": response_text})
-        if len(self.conversation_history) > 30:
-            self.conversation_history = self.conversation_history[-20:]
+    def _update_converse_history(self, session_id: str, content: str, response_text: str):
+        """Append a turn to this session's conversation history (stores sanitized text only)."""
+        history = self.conversation_history.setdefault(session_id, [])
+        history.append({"role": "user", "content": content})
+        history.append({"role": "assistant", "content": response_text})
+        if len(history) > 30:
+            del history[:len(history) - 20]
+        # Defensive cap on total tracked sessions -- forget_session() is the
+        # normal cleanup path (called when a dashboard session token expires),
+        # but this bounds memory even if a caller never does that.
+        if len(self.conversation_history) > 200:
+            oldest = next(iter(self.conversation_history))
+            if oldest != session_id:
+                del self.conversation_history[oldest]
 
-    async def converse(self, user_message: str, extra_context: str = "") -> str:
+    def forget_session(self, session_id: str):
+        """Drop a session's conversation history (e.g. once its token expires)."""
+        self.conversation_history.pop(session_id, None)
+
+    async def converse(self, session_id: str, user_message: str, extra_context: str = "") -> str:
         """Conversational response as Mel — the primary chat method."""
         if not self.api_key:
             return "Claude API key not configured."
 
-        content, headers, payload = self._prepare_converse(user_message, extra_context)
+        content, headers, payload = self._prepare_converse(session_id, user_message, extra_context)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                )
-                result = response.json()
-                raw_response = result["content"][0]["text"]
-                self._update_converse_history(content, raw_response)
-                return self.sanitizer.desanitize(raw_response)
+            response = await self._http.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=30.0,
+            )
+            result = response.json()
+            raw_response = result["content"][0]["text"]
+            self._update_converse_history(session_id, content, raw_response)
+            return self.sanitizer.desanitize(raw_response)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             return "I'm having trouble reaching my cloud brain right now. Try again in a moment."
 
-    async def converse_stream(self, user_message: str, extra_context: str = ""):
+    async def converse_stream(self, session_id: str, user_message: str, extra_context: str = ""):
         """Stream tokens from Claude API. Yields text chunks as they arrive."""
         if not self.api_key:
             yield "Claude API key not configured."
             return
 
-        content, headers, payload = self._prepare_converse(user_message, extra_context)
+        content, headers, payload = self._prepare_converse(session_id, user_message, extra_context)
         payload["stream"] = True
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST",
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                ) as response:
-                    # Check for HTTP errors before trying to read the stream
-                    if response.status_code != 200:
-                        body = ""
-                        async for chunk in response.aiter_bytes():
-                            body += chunk.decode("utf-8", errors="replace")
-                            if len(body) > 500:
-                                break
-                        logger.error(f"Claude stream HTTP {response.status_code}: {body[:300]}")
-                        yield f"Hmm, something went sideways on my end ({response.status_code}). Try again in a sec?"
-                        return
+            async with self._http.stream(
+                "POST",
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=120.0,
+            ) as response:
+                # Check for HTTP errors before trying to read the stream
+                if response.status_code != 200:
+                    body = ""
+                    async for chunk in response.aiter_bytes():
+                        body += chunk.decode("utf-8", errors="replace")
+                        if len(body) > 500:
+                            break
+                    logger.error(f"Claude stream HTTP {response.status_code}: {body[:300]}")
+                    yield f"Hmm, something went sideways on my end ({response.status_code}). Try again in a sec?"
+                    return
 
-                    full_response = ""
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            try:
-                                data = json.loads(line[6:])
-                                if data.get("type") == "content_block_delta":
-                                    text = data.get("delta", {}).get("text", "")
-                                    if text:
-                                        full_response += text
-                                        yield text
-                                elif data.get("type") == "error":
-                                    logger.error(f"Claude stream error event: {data}")
-                            except json.JSONDecodeError:
-                                continue
-                    # Update history after stream completes (sanitized text only)
-                    if full_response:
-                        self._update_converse_history(content, full_response)
+                full_response = ""
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])
+                            if data.get("type") == "content_block_delta":
+                                text = data.get("delta", {}).get("text", "")
+                                if text:
+                                    full_response += text
+                                    yield text
+                            elif data.get("type") == "error":
+                                logger.error(f"Claude stream error event: {data}")
+                        except json.JSONDecodeError:
+                            continue
+                # Update history after stream completes (sanitized text only)
+                if full_response:
+                    self._update_converse_history(session_id, content, full_response)
         except Exception as e:
             logger.error(f"Claude stream error: {e}")
             # Don't yield an error message — let the orchestrator fallback handle it
@@ -615,25 +680,120 @@ class ClaudeClient:
         payload = {
             "model": self.model,
             "max_tokens": 2048,
-            "system": self._mel_system_prompt(),
+            "system": [
+                {
+                    "type": "text",
+                    "text": self._mel_system_prompt(include_time=False),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": f"Current date and time: {self._current_time_str()}."},
+            ],
             "messages": [
                 {"role": "user", "content": f"Task: {safe_description}\nContext: {safe_context}"}
             ],
         }
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                )
-                result = response.json()
-                raw_response = result["content"][0]["text"]
-                return self.sanitizer.desanitize(raw_response)
+            response = await self._http.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=30.0,
+            )
+            result = response.json()
+            raw_response = result["content"][0]["text"]
+            return self.sanitizer.desanitize(raw_response)
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             return "Cloud reasoning temporarily unavailable. Try again or use local model."
+
+
+# ─────────────────────────────────────────────
+# OpenAI Client (image generation + web-search-grounded answers)
+# ─────────────────────────────────────────────
+class OpenAIClient:
+    """Two things Claude doesn't do here: generate images, and answer with
+    live web results via a search-grounded model. Both are optional --
+    calls degrade to None/"" if OPENAI_API_KEY isn't configured, and
+    callers handle that the same way every other optional plugin does."""
+
+    def __init__(self):
+        self.api_key = Config.OPENAI_API_KEY
+        self.image_model = Config.OPENAI_IMAGE_MODEL
+        self.search_model = Config.OPENAI_SEARCH_MODEL
+        self._http = httpx.AsyncClient()
+
+    async def generate_image(self, prompt: str) -> str | None:
+        """Generate an image and save it under data/generated_images/.
+        Returns the saved filename (not a full path/URL -- server.py serves
+        that directory statically), or None on failure/not-configured."""
+        if not self.api_key:
+            return None
+        try:
+            resp = await self._http.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={"model": self.image_model, "prompt": prompt, "size": "1024x1024", "n": 1},
+                timeout=60.0,
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                logger.error(f"OpenAI image generation failed ({resp.status_code}): {data}")
+                return None
+
+            item = data.get("data", [{}])[0]
+            if item.get("b64_json"):
+                import base64
+                image_bytes = base64.b64decode(item["b64_json"])
+            elif item.get("url"):
+                img_resp = await self._http.get(item["url"], timeout=30.0)
+                image_bytes = img_resp.content
+            else:
+                logger.error(f"OpenAI image response had neither b64_json nor url: {data}")
+                return None
+
+            images_dir = os.path.join(os.path.dirname(__file__), "..", "data", "generated_images")
+            os.makedirs(images_dir, exist_ok=True)
+            filename = f"{secrets.token_hex(8)}.png"
+            with open(os.path.join(images_dir, filename), "wb") as f:
+                f.write(image_bytes)
+            return filename
+        except Exception as e:
+            logger.error(f"OpenAI image generation error: {e}")
+            return None
+
+    async def web_search(self, query: str) -> str:
+        """Answer a question using a web-search-grounded OpenAI model.
+        Returns "" if not configured or the call fails, so callers can fall
+        back to another search path."""
+        if not self.api_key:
+            return ""
+        try:
+            resp = await self._http.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": self.search_model,
+                    "tools": [{"type": "web_search"}],
+                    "input": query,
+                },
+                timeout=30.0,
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                logger.error(f"OpenAI web search failed ({resp.status_code}): {data}")
+                return ""
+
+            text = ""
+            for item in data.get("output", []):
+                if item.get("type") == "message":
+                    for block in item.get("content", []):
+                        if block.get("type") == "output_text":
+                            text += block.get("text", "")
+            return text.strip()
+        except Exception as e:
+            logger.error(f"OpenAI web search error: {e}")
+            return ""
 
 
 # ─────────────────────────────────────────────
@@ -708,6 +868,9 @@ class AgentOrchestrator:
     def __init__(self):
         self.ollama = OllamaClient()
         self.claude = ClaudeClient()
+        self.openai = OpenAIClient()
+        self.router = ModelRouter()
+        self.gateway = ModelGateway(self.ollama, self.claude, self.openai)
         self.classifier = IntentClassifier()
         self.actions = ActionRegistry()
         self.tasks = TaskManager()
@@ -894,7 +1057,7 @@ class AgentOrchestrator:
         logger.info(f"🔴 {Config.AGENT_NAME} going to sleep.")
         return f"{Config.AGENT_NAME} is going to sleep. Use the wake command to wake me up."
 
-    async def process(self, user_input: str) -> str:
+    async def process(self, user_input: str, session_id: str = "default") -> str:
         """Main processing pipeline."""
 
         # Normalize apostrophes (smart quotes → straight) before any matching
@@ -1013,20 +1176,34 @@ class AgentOrchestrator:
             response = await self._handle_design(user_input, classification)
 
         elif category == "SEARCH":
-            response = await self._handle_search(user_input, classification)
+            response = await self._handle_search(user_input, classification, session_id)
+
+        elif category == "IMAGE":
+            response = await self._handle_image(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
-            response = await self.claude.converse(user_input)
+            backend = self.router.choose(category, classification, user_input)
+            response = await self.gateway.generate(
+                backend, session_id, user_input,
+                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            )
 
         else:
-            # Default: Claude with full Mel persona — handles all general conversation,
-            # personal questions, information queries, small talk, etc.
-            response = await self.claude.converse(user_input)
-            # If Claude returned empty or errored, use fallback
+            # Default: routed via ModelRouter -- local by default, Claude for
+            # complex coding/reasoning or when classification flags requires_cloud.
+            # Handles all general conversation, personal questions, information
+            # queries, small talk, etc.
+            backend = self.router.choose(category, classification, user_input)
+            response = await self.gateway.generate(
+                backend, session_id, user_input,
+                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            )
+            # If the model returned empty or errored, use fallback
             if (not response or not response.strip()
                     or "trouble reaching" in response.lower()
-                    or "not configured" in response.lower()):
-                response = await self._conversational_fallback(user_input)
+                    or "not configured" in response.lower()
+                    or "unavailable" in response.lower()):
+                response = await self._conversational_fallback(user_input, session_id)
 
         # Store conversation in knowledge base
         if self.knowledge and response:
@@ -1037,7 +1214,7 @@ class AgentOrchestrator:
 
         return response
 
-    async def process_stream(self, user_input: str):
+    async def process_stream(self, user_input: str, session_id: str = "default"):
         """Streaming variant of process(). Yields tokens for SSE delivery.
         For action categories (instant results), yields the full response at once.
         For Claude/Ollama-backed categories, streams token-by-token.
@@ -1098,16 +1275,20 @@ class AgentOrchestrator:
             return
 
         # Action categories — instant results, yield full response
-        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "EMAIL", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION", "SEARCH"}
+        INSTANT_CATEGORIES = {"CODE", "DEVOPS", "KNOWLEDGE", "CALENDAR", "EMAIL", "MUSIC", "REMINDER", "HOME", "WEATHER", "ROUTINE", "NOTIFICATION", "SEARCH", "IMAGE"}
         if category in INSTANT_CATEGORIES:
-            response = await self.process(user_input)
+            response = await self.process(user_input, session_id)
             yield response
             return
 
-        # Claude-backed categories — stream token-by-token
+        # Routed via ModelRouter — stream token-by-token
+        backend = self.router.choose(category, classification, user_input)
         full_response = ""
         try:
-            async for token in self.claude.converse_stream(user_input):
+            async for token in self.gateway.generate_stream(
+                backend, session_id, user_input,
+                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            ):
                 full_response += token
                 yield token
         except Exception as e:
@@ -1116,7 +1297,7 @@ class AgentOrchestrator:
         # If Claude returned nothing, generate a local fallback response
         if not full_response.strip():
             logger.warning("Claude stream returned empty — using fallback")
-            fallback = await self._conversational_fallback(user_input)
+            fallback = await self._conversational_fallback(user_input, session_id)
             full_response = fallback
             yield fallback
 
@@ -1130,12 +1311,12 @@ class AgentOrchestrator:
     # ─────────────────────────────────────────────
     # Conversational Fallback
     # ─────────────────────────────────────────────
-    async def _conversational_fallback(self, user_input: str) -> str:
+    async def _conversational_fallback(self, user_input: str, session_id: str = "default") -> str:
         """Generate a response when Claude streaming fails or returns empty.
         Tries non-streaming Claude first, then Ollama, then a hardcoded response."""
         # Try non-streaming Claude
         try:
-            response = await self.claude.converse(user_input)
+            response = await self.claude.converse(session_id, user_input)
             if (response and response.strip()
                     and "trouble reaching" not in response.lower()
                     and "not configured" not in response.lower()):
@@ -1781,7 +1962,7 @@ Request: {summary}"""
     # ─────────────────────────────────────────────
     # SEARCH Handler - Web search via DuckDuckGo
     # ─────────────────────────────────────────────
-    async def _handle_search(self, user_input: str, classification: dict) -> str:
+    async def _handle_search(self, user_input: str, classification: dict, session_id: str = "default") -> str:
         """Handle web search requests and browser-open commands."""
         intent = classification.get("intent", "")
 
@@ -1823,7 +2004,7 @@ Request: {summary}"""
             from search import WebSearch
         except ImportError:
             # Fall back to Claude for search-like questions
-            return await self.claude.converse(user_input)
+            return await self.claude.converse(session_id, user_input)
 
         # Extract the search query — strip conversational preamble to get the core question
         query = user_input
@@ -1860,6 +2041,16 @@ Request: {summary}"""
         if re.search(r'\b(how much|price|cost|worth)\b', user_input, re.IGNORECASE) and not re.search(r'\b(price|cost)\b', query, re.IGNORECASE):
             query += " price"
 
+        # Prefer OpenAI's web-search-grounded model when configured; fall
+        # back to free DuckDuckGo + Claude summarization otherwise (also the
+        # fallback if OpenAI's call fails for any reason).
+        if self.openai.api_key:
+            answer = await self.openai.web_search(query)
+            if answer:
+                self._last_search_results = None
+                return answer
+            logger.warning("OpenAI web search returned nothing, falling back to DuckDuckGo")
+
         results = await WebSearch.search(query, max_results=5)
         if not results:
             return f"Couldn't find anything for '{query}'. Try a different search term?"
@@ -1881,7 +2072,7 @@ Request: {summary}"""
                 f"At the end, mention you can share the source links if they want more detail. "
                 f"Keep it to 2-4 sentences max."
             )
-            summary = await self.claude.converse(summary_prompt, extra_context="You are summarizing web search results. Be factual and concise.")
+            summary = await self.claude.converse(session_id, summary_prompt, extra_context="You are summarizing web search results. Be factual and concise.")
             # Store the URLs so user can ask for them
             self._last_search_results = results
             return summary
@@ -1894,6 +2085,36 @@ Request: {summary}"""
                 if r.get("snippet"):
                     lines.append(f"   {r['snippet']}")
             return "\n".join(lines)
+
+    # ─────────────────────────────────────────────
+    # IMAGE Handler - Generation via OpenAI
+    # ─────────────────────────────────────────────
+    async def _handle_image(self, user_input: str, classification: dict) -> str:
+        """Generate an image via OpenAI. The response embeds a markdown
+        image (`![alt](url)`) that the dashboard renders inline; server.py's
+        /tts strips markdown images before speaking, so voice just hears a
+        short spoken confirmation instead of a URL."""
+        if not self.openai.api_key:
+            return ("I can't generate images yet -- that needs an OpenAI API key. "
+                    "Add OPENAI_API_KEY and I'll be able to.")
+
+        # Strip the request-shaped preamble down to the actual subject, e.g.
+        # "can you quickly make a picture of a donkey eating a hamburger"
+        # -> "a donkey eating a hamburger"
+        subject = re.sub(
+            r'^.*?\b(?:picture|image|photo|illustration|drawing|sketch)\s+of\s+',
+            '', user_input, flags=re.IGNORECASE
+        ).strip()
+        if not subject or subject == user_input:
+            subject = re.sub(r'^(draw|sketch)\s+(me\s+)?(a|an)?\s*', '', user_input, flags=re.IGNORECASE).strip()
+        if not subject:
+            subject = user_input
+
+        filename = await self.openai.generate_image(subject)
+        if not filename:
+            return "That didn't come through -- might be an OpenAI hiccup. Want me to try again?"
+
+        return f"Here you go. ![{subject}](/generated-images/{filename})"
 
     # ─────────────────────────────────────────────
     # KNOWLEDGE Handler - Memory & recall

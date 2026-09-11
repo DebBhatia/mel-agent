@@ -18,6 +18,7 @@ from orchestrator import (
     ActionRegistry,
     OllamaClient,
     ClaudeClient,
+    OpenAIClient,
 )
 
 
@@ -79,6 +80,24 @@ class TestIntentClassifier:
 
     def test_code_generation(self):
         result = self.classifier._keyword_classify("build me a landing page for my startup")
+        assert result["category"] == "CODE"
+
+    def test_image_generation(self):
+        result = self.classifier._keyword_classify("can you quickly make a picture of a donkey eating a hamburger")
+        assert result["category"] == "IMAGE"
+
+    def test_image_generation_generate_phrasing(self):
+        result = self.classifier._keyword_classify("generate an image of a sunset over mountains")
+        assert result["category"] == "IMAGE"
+
+    def test_image_request_not_misclassified_as_code(self):
+        # "generate"/"create" are CODE keywords too -- image phrasing must
+        # win since it's checked first (orchestrator.py, _keyword_classify).
+        result = self.classifier._keyword_classify("create a picture of a cat wearing a hat")
+        assert result["category"] == "IMAGE"
+
+    def test_code_generation_not_misclassified_as_image(self):
+        result = self.classifier._keyword_classify("generate a website for my bakery")
         assert result["category"] == "CODE"
 
     def test_calendar(self):
@@ -244,8 +263,68 @@ class TestClaudeClient:
         assert Config.USER_NAME in prompt
         assert "casual" in prompt.lower() or "friend" in prompt.lower()
 
+    def test_mel_system_prompt_include_time_false_omits_timestamp(self):
+        # Prompt-caching relies on this block being identical across calls;
+        # a live timestamp embedded in it would invalidate the cache almost
+        # every turn (orchestrator.py, _prepare_converse/reason).
+        client = ClaudeClient()
+        with_time = client._mel_system_prompt(include_time=True)
+        without_time = client._mel_system_prompt(include_time=False)
+        assert "Current date and time" in with_time
+        assert "Current date and time" not in without_time
+
+    def test_prepare_converse_system_block_is_cacheable(self):
+        client = ClaudeClient()
+        _, _, payload = client._prepare_converse("test-session", "hi")
+        assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "Current date and time" not in payload["system"][0]["text"]
+        assert "Current date and time" in payload["system"][1]["text"]
+
+
+# ── OpenAIClient ──────────────────────────────
+
+class TestOpenAIClient:
+    @pytest.mark.asyncio
+    async def test_generate_image_no_api_key_returns_none(self):
+        client = OpenAIClient()
+        client.api_key = ""
+        result = await client.generate_image("a donkey eating a hamburger")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_web_search_no_api_key_returns_empty(self):
+        client = OpenAIClient()
+        client.api_key = ""
+        result = await client.web_search("who won the game last night")
+        assert result == ""
+
 
 # ── Conversational Fallback ──────────────────
+class TestImageHandler:
+    @pytest.mark.asyncio
+    async def test_handle_image_no_api_key(self):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        orch.openai.api_key = ""
+        result = await orch._handle_image("a picture of a donkey eating a hamburger", {})
+        assert "OpenAI" in result or "API key" in result
+
+    @pytest.mark.asyncio
+    async def test_handle_image_extracts_subject_and_embeds_markdown(self, monkeypatch):
+        from orchestrator import AgentOrchestrator
+        orch = AgentOrchestrator()
+        orch.openai.api_key = "fake-key-for-test"
+
+        async def fake_generate_image(prompt):
+            assert "donkey" in prompt.lower()
+            return "abc123.png"
+
+        monkeypatch.setattr(orch.openai, "generate_image", fake_generate_image)
+        result = await orch._handle_image("can you quickly make a picture of a donkey eating a hamburger", {})
+        assert "![" in result
+        assert "/generated-images/abc123.png" in result
+
+
 class TestConversationalFallback:
     @pytest.mark.asyncio
     async def test_greeting_fallback(self):

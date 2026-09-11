@@ -2,6 +2,7 @@
 
 import os
 import sys
+import asyncio
 import pytest
 import numpy as np
 from datetime import datetime
@@ -14,6 +15,7 @@ from wake_listener import (
     WakeWordDetector,
     VoiceAgent,
     TextToSpeech,
+    AudioCapture,
     SAMPLE_RATE,
     CHUNK_SIZE,
     SILENCE_THRESHOLD,
@@ -153,3 +155,128 @@ class TestConstants:
 
     def test_silence_threshold(self):
         assert SILENCE_THRESHOLD == 500
+
+
+# ── Barge-in ──────────────────────────────────
+
+class TestWatchForSpeech:
+    @pytest.mark.asyncio
+    async def test_detects_sustained_loud_audio(self):
+        audio = AudioCapture()
+        quiet = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        loud = np.full(CHUNK_SIZE, 20000, dtype=np.int16)
+        chunks = iter([quiet, loud, loud, loud, loud])
+        audio.read_chunk = MagicMock(side_effect=lambda: next(chunks))
+
+        triggered, heard = await audio.watch_for_speech(
+            threshold=1000, min_consecutive=3, stop_event=asyncio.Event()
+        )
+
+        assert triggered is True
+        # The leading quiet chunk resets the streak, so only the 3
+        # consecutive loud chunks that actually triggered it are returned.
+        assert len(heard) == 3
+
+    @pytest.mark.asyncio
+    async def test_single_loud_blip_does_not_trigger(self):
+        """One loud chunk surrounded by quiet ones shouldn't count as speech --
+        this is the debounce that protects against a click/pop/bump."""
+        audio = AudioCapture()
+        quiet = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        loud = np.full(CHUNK_SIZE, 20000, dtype=np.int16)
+        stop_event = asyncio.Event()
+        chunks = iter([quiet, loud, quiet, quiet])
+
+        def _read():
+            try:
+                return next(chunks)
+            except StopIteration:
+                stop_event.set()
+                return quiet
+
+        audio.read_chunk = MagicMock(side_effect=_read)
+        triggered, _ = await audio.watch_for_speech(
+            threshold=1000, min_consecutive=3, stop_event=stop_event
+        )
+        assert triggered is False
+
+    @pytest.mark.asyncio
+    async def test_stops_when_event_set_before_threshold(self):
+        audio = AudioCapture()
+        quiet = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        stop_event = asyncio.Event()
+        calls = {"n": 0}
+
+        def _read():
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                stop_event.set()
+            return quiet
+
+        audio.read_chunk = MagicMock(side_effect=_read)
+        triggered, _ = await audio.watch_for_speech(
+            threshold=1000, min_consecutive=3, stop_event=stop_event
+        )
+        assert triggered is False
+
+
+class TestCaptureCommandTextPreroll:
+    @pytest.mark.asyncio
+    async def test_preroll_is_prepended_to_captured_audio(self):
+        agent = VoiceAgent()
+        quiet = np.zeros(CHUNK_SIZE, dtype=np.int16)
+        agent.audio.read_chunk = MagicMock(return_value=quiet)
+        agent.audio.drain = MagicMock()
+        agent.stt.transcribe = MagicMock(return_value="test command")
+        preroll_chunk = np.full(CHUNK_SIZE, 5000, dtype=np.int16)
+
+        with patch("wake_listener._notify_server", new=AsyncMock()):
+            result = await agent._capture_command_text(drain_first=False, preroll=[preroll_chunk])
+
+        assert result == "test command"
+        transcribed_audio = agent.stt.transcribe.call_args[0][0]
+        # Preroll chunk plus at least the silence chunks read during capture.
+        assert len(transcribed_audio) > CHUNK_SIZE
+
+
+class TestPlayWithBargeIn:
+    @pytest.mark.asyncio
+    async def test_interrupted_when_watcher_detects_speech(self):
+        agent = VoiceAgent()
+
+        async def slow_play(path):
+            await asyncio.sleep(10)  # would hang the test if not cancelled
+
+        agent.tts._play_file = slow_play
+        preroll_chunk = np.full(CHUNK_SIZE, 5000, dtype=np.int16)
+        agent.audio.watch_for_speech = AsyncMock(return_value=(True, [preroll_chunk]))
+        agent._capture_command_text = AsyncMock(return_value="wait actually")
+
+        interrupted, heard = await asyncio.wait_for(
+            agent._play_with_barge_in("/tmp/fake.mp3"), timeout=5
+        )
+
+        assert interrupted is True
+        assert heard == "wait actually"
+        agent._capture_command_text.assert_awaited_once_with(drain_first=False, preroll=[preroll_chunk])
+
+    @pytest.mark.asyncio
+    async def test_not_interrupted_when_playback_finishes_first(self):
+        agent = VoiceAgent()
+
+        async def fast_play(path):
+            await asyncio.sleep(0.01)
+
+        async def never_triggers(threshold, min_consecutive, stop_event):
+            await stop_event.wait()
+            return False, []
+
+        agent.tts._play_file = fast_play
+        agent.audio.watch_for_speech = never_triggers
+
+        interrupted, heard = await asyncio.wait_for(
+            agent._play_with_barge_in("/tmp/fake.mp3"), timeout=5
+        )
+
+        assert interrupted is False
+        assert heard == ""

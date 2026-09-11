@@ -27,6 +27,7 @@ tasks.json
 *.db
 *.sqlite
 projects_index.json
+data/generated_images/
 
 # Agent workspace
 agent-workspace/

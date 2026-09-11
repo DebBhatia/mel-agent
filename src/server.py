@@ -44,6 +44,7 @@ import asyncio as _asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
@@ -209,6 +210,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Generated images (OpenAI image generation) -- served unauthenticated since
+# the dashboard references them from plain <img src> tags, which can't send
+# an Authorization header. Filenames are 16 hex chars of randomness
+# (secrets.token_hex(8)), which is the access control here.
+_GENERATED_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "generated_images")
+os.makedirs(_GENERATED_IMAGES_DIR, exist_ok=True)
+app.mount("/generated-images", StaticFiles(directory=_GENERATED_IMAGES_DIR), name="generated-images")
+
 # ── API Key Authentication ─────────────────────
 def _load_or_generate_api_key() -> str:
     """Load API key from encrypted vault, then env, or generate on first run."""
@@ -260,6 +269,7 @@ def _create_session() -> str:
     expired = [t for t, exp in list(_sessions.items()) if exp < now]
     for t in expired:
         del _sessions[t]
+        agent.claude.forget_session(f"session:{t}")
     token = secrets.token_urlsafe(32)
     _sessions[token] = now + _SESSION_TTL
     return token
@@ -305,6 +315,22 @@ async def require_api_key(request: Request):
         status_code=401,
         detail="Authentication required. Use Authorization: Bearer <key> or X-API-Key header.",
     )
+
+
+def _derive_session_id(request: Request) -> str:
+    """Identify which caller a /process turn belongs to, so ClaudeClient can
+    keep separate conversation histories instead of one shared singleton
+    (which let the dashboard and the native listener bleed into each
+    other's context). Each dashboard page load has its own X-Session-Token,
+    which makes a fine natural key; API-key callers (the native Mac/Pi
+    listener) have no such token, so they share one fixed bucket."""
+    token = request.headers.get("X-Session-Token", "")
+    if token:
+        return f"session:{token}"
+    cookie_token = request.cookies.get("mel_session", "")
+    if cookie_token:
+        return f"session:{cookie_token}"
+    return "api"
 
 
 # ── CORS — restricted to configured origins ────
@@ -528,32 +554,34 @@ async def health_detail():
     }
 
 @app.post("/process", response_model=ProcessResponse, dependencies=[Depends(require_api_key)])
-async def process_input(request: ProcessRequest):
+async def process_input(request: ProcessRequest, http_request: Request):
     if not request.input.strip():
         raise HTTPException(status_code=400, detail="Empty input")
     if len(request.input) > 5000:
         raise HTTPException(status_code=400, detail="Input too long (max 5000 chars)")
+    session_id = _derive_session_id(http_request)
     await ws_manager.broadcast("status", {"status": "thinking"})
     try:
-        response = await agent.process(request.input)
+        response = await agent.process(request.input, session_id)
     finally:
         await ws_manager.broadcast("status", {"status": "idle"})
     return ProcessResponse(response=response, timestamp=datetime.now().isoformat())
 
 
 @app.post("/process/stream", dependencies=[Depends(require_api_key)])
-async def process_input_stream(request: ProcessRequest):
+async def process_input_stream(request: ProcessRequest, http_request: Request):
     """Stream agent response token-by-token via Server-Sent Events."""
     if not request.input.strip():
         raise HTTPException(status_code=400, detail="Empty input")
     if len(request.input) > 5000:
         raise HTTPException(status_code=400, detail="Input too long (max 5000 chars)")
+    session_id = _derive_session_id(http_request)
 
     async def event_generator():
         yield f"event: status\ndata: {_json.dumps({'status': 'thinking'})}\n\n"
         await ws_manager.broadcast("status", {"status": "thinking"})
         try:
-            async for token in agent.process_stream(request.input):
+            async for token in agent.process_stream(request.input, session_id):
                 yield f"event: token\ndata: {_json.dumps({'token': token})}\n\n"
             yield f"event: done\ndata: {_json.dumps({'status': 'complete'})}\n\n"
         except Exception as e:
@@ -610,7 +638,10 @@ async def sleep_agent():
 
 @app.post("/tts", dependencies=[Depends(require_api_key)])
 async def text_to_speech(request: TTSRequest):
-    """Convert text to speech via ElevenLabs. Returns audio/mpeg."""
+    """Convert text to speech via ElevenLabs. Proxies ElevenLabs' streaming
+    endpoint and forwards bytes to the client as they arrive, instead of
+    waiting for the whole file to be generated server-side first -- this is
+    what lets the browser start playback before synthesis has finished."""
     import httpx
     text = request.text.strip()
     if not text:
@@ -632,33 +663,57 @@ async def text_to_speech(request: TTSRequest):
 
     # Strip markdown so it doesn't get read aloud ("asterisk asterisk bold asterisk asterisk")
     import re as _re
+    text = _re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)      # generated images (dashboard-only, not spoken)
     text = _re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)   # bold/italic
     text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)         # inline code / code blocks
     text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)  # headers
     text = _re.sub(r'^\s*[-*•]\s+', '', text, flags=_re.MULTILINE)  # bullet points
     text = _re.sub(r'\n{3,}', '\n\n', text).strip()
 
+    client = httpx.AsyncClient(timeout=30.0)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-                headers={"xi-api-key": api_key, "Content-Type": "application/json"},
-                json={
-                    "text": text,
-                    "model_id": "eleven_flash_v2_5",  # newest model — most natural, lowest latency
-                    "voice_settings": {
-                        "stability": 0.40,          # balanced: not flat, not erratic
-                        "similarity_boost": 0.85,   # strong character presence
-                        "style": 0.65,              # expressive & warm — sounds happy/engaged
-                        "use_speaker_boost": True   # sharper, more present sound
-                    }
+        req = client.build_request(
+            "POST",
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "text": text,
+                "model_id": "eleven_flash_v2_5",  # newest model — most natural, lowest latency
+                # Pinned explicitly: each sentence is synthesized as its own
+                # independent request (see the sentence-chunked streaming
+                # pipeline), and a short/odd trailing fragment can otherwise
+                # get its language auto-detected wrong, making the tail end
+                # of a reply come out in the wrong language.
+                "language_code": "en",
+                "voice_settings": {
+                    "stability": 0.40,          # balanced: not flat, not erratic
+                    "similarity_boost": 0.85,   # strong character presence
+                    "style": 0.65,              # expressive & warm — sounds happy/engaged
+                    "use_speaker_boost": True   # sharper, more present sound
                 },
-            )
-            if resp.status_code == 200:
-                return Response(content=resp.content, media_type="audio/mpeg")
-            raise HTTPException(status_code=resp.status_code, detail=f"ElevenLabs error: {resp.text[:200]}")
+                "optimize_streaming_latency": 4,  # max latency optimizations at the encoder
+            },
+        )
+        upstream = await client.send(req, stream=True)
     except httpx.TimeoutException:
+        await client.aclose()
         raise HTTPException(status_code=504, detail="TTS request timed out")
+
+    if upstream.status_code != 200:
+        body = await upstream.aread()
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=upstream.status_code, detail=f"ElevenLabs error: {body[:200].decode('utf-8', 'replace')}")
+
+    async def audio_stream():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(audio_stream(), media_type="audio/mpeg")
 
 @app.get("/tts/config", dependencies=[Depends(require_api_key)])
 async def tts_config():
