@@ -44,10 +44,16 @@ class ModelRouter:
         if category in COMPLEX_CATEGORIES:
             return Backend.CLAUDE
 
-        if classification.get("requires_cloud"):
-            return Backend.CLAUDE
-
         if category == "OPENAI_SEARCH":
             return Backend.OPENAI_SEARCH
 
+        # classification.get("requires_cloud") is intentionally NOT consulted
+        # here. IntentClassifier sets it as a blanket True for any
+        # keyword-unmatched request (i.e. plain INFORMATION fallthrough) and
+        # RESERVATION, and IntentClassifier.classify()'s Ollama path can echo
+        # whatever value the local model guesses for it -- neither is a
+        # reliable signal of actual complexity, and honoring it defeated the
+        # local-first policy for ordinary conversation. Only an explicit
+        # complex-coding/deep-reasoning category escalates to Claude; default
+        # to local when in doubt.
         return Backend.LOCAL
