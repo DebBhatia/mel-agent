@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from router import ModelRouter
 from model_gateway import ModelGateway
+from multi_agent import build_default_registry, select_agent, MultiAgentManager
 
 load_dotenv()
 
@@ -871,6 +872,8 @@ class AgentOrchestrator:
         self.openai = OpenAIClient()
         self.router = ModelRouter()
         self.gateway = ModelGateway(self.ollama, self.claude, self.openai)
+        self.specialist_registry = build_default_registry()
+        self.multi_agent = MultiAgentManager(self.specialist_registry, self.router, self.gateway)
         self.classifier = IntentClassifier()
         self.actions = ActionRegistry()
         self.tasks = TaskManager()
@@ -1124,6 +1127,16 @@ class AgentOrchestrator:
             classification = kw
             intent = kw.get("intent", "unknown")
 
+        # Select the specialist immediately post-classification, before any
+        # handler dispatch -- a pure category lookup, no LLM call, and no
+        # backend implication (see multi_agent.select_agent). Runs for every
+        # request so all seven specialists are exercised in live traffic,
+        # even though only the default/RESERVATION/COMMUNICATION path below
+        # actually executes through one (the other categories are already
+        # fully resolved by their existing action handlers).
+        agent_name = select_agent(category, classification)
+        logger.info(f"Specialist selected: {agent_name} (category={category})")
+
         # Step 2a: Time/date — answer instantly from system clock
         if any(kw_t in _inp for kw_t in ("what time is it", "what's the time", "what is the time",
                                           "current time", "what day is it", "today's date",
@@ -1182,21 +1195,18 @@ class AgentOrchestrator:
             response = await self._handle_image(user_input, classification)
 
         elif category in ["RESERVATION", "COMMUNICATION"]:
-            backend = self.router.choose(category, classification, user_input)
-            response = await self.gateway.generate(
-                backend, session_id, user_input,
-                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            response = await self.multi_agent.execute(
+                agent_name, category, classification, user_input, session_id
             )
 
         else:
-            # Default: routed via ModelRouter -- local by default, Claude for
-            # complex coding/reasoning or when classification flags requires_cloud.
-            # Handles all general conversation, personal questions, information
-            # queries, small talk, etc.
-            backend = self.router.choose(category, classification, user_input)
-            response = await self.gateway.generate(
-                backend, session_id, user_input,
-                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            # Default: delegated to the selected specialist (multi_agent.py),
+            # which resolves backend via the existing ModelRouter -- local by
+            # default, Claude only for complex-coding/deep-reasoning
+            # categories. Handles all general conversation, personal
+            # questions, information queries, small talk, etc.
+            response = await self.multi_agent.execute(
+                agent_name, category, classification, user_input, session_id
             )
             # If the model returned empty or errored, use fallback
             if (not response or not response.strip()
@@ -1259,6 +1269,11 @@ class AgentOrchestrator:
         else:
             classification = kw
 
+        # Select the specialist immediately post-classification, before any
+        # handler dispatch -- see the matching comment in process().
+        agent_name = select_agent(category, classification)
+        logger.info(f"Specialist selected: {agent_name} (category={category})")
+
         # Time/date — instant answer
         if any(kw_t in _inp for kw_t in ("what time is it", "what's the time", "what is the time",
                                           "current time", "what day is it", "today's date",
@@ -1281,13 +1296,11 @@ class AgentOrchestrator:
             yield response
             return
 
-        # Routed via ModelRouter — stream token-by-token
-        backend = self.router.choose(category, classification, user_input)
+        # Delegated to the selected specialist — stream token-by-token
         full_response = ""
         try:
-            async for token in self.gateway.generate_stream(
-                backend, session_id, user_input,
-                system_prompt=self.claude._mel_system_prompt(include_time=False),
+            async for token in self.multi_agent.execute_stream(
+                agent_name, category, classification, user_input, session_id
             ):
                 full_response += token
                 yield token
