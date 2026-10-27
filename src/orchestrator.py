@@ -19,7 +19,7 @@ from typing import Optional
 import httpx
 from dotenv import load_dotenv
 
-from router import ModelRouter
+from router import ModelRouter, Backend
 from model_gateway import ModelGateway
 from multi_agent import build_default_registry, select_agent, MultiAgentManager
 
@@ -708,6 +708,48 @@ class ClaudeClient:
             logger.error(f"Claude API error: {e}")
             return "Cloud reasoning temporarily unavailable. Try again or use local model."
 
+    async def complete(self, session_id: str, prompt: str, system_prompt: str,
+                        max_tokens: int = 1024) -> str:
+        """Stateless one-shot completion with a caller-supplied system prompt
+        -- for structured/non-conversational cloud tasks (e.g. code
+        generation via codegen.py's BuildPipeline) that must not use Mel's
+        persona prompt and must not accumulate turn history. Unlike
+        converse()/reason(), raises on failure rather than returning a
+        friendly fallback string, since callers here (BuildPipeline) already
+        have their own error handling and expect an exception on failure."""
+        if not self.api_key:
+            raise RuntimeError("Claude API key not configured")
+
+        safe_prompt = self.sanitizer.sanitize(prompt)
+        if self.enhanced_sanitizer:
+            safe_prompt = self.enhanced_sanitizer.sanitize(safe_prompt)
+
+        headers = {
+            "x-api-key": self.api_key,
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": safe_prompt}],
+        }
+
+        response = await self._http.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=120.0,
+        )
+        result = response.json()
+        if "error" in result:
+            raise RuntimeError(f"Claude API: {result['error'].get('message', result['error'])}")
+        if "content" not in result or not result["content"]:
+            raise RuntimeError("Empty response from Claude API")
+        raw_response = result["content"][0]["text"]
+        return self.sanitizer.desanitize(raw_response)
+
 
 # ─────────────────────────────────────────────
 # OpenAI Client (image generation + web-search-grounded answers)
@@ -966,7 +1008,7 @@ class AgentOrchestrator:
         """Initialize optional extensions (codegen, knowledge base)."""
         try:
             from codegen import BuildPipeline
-            self.build_pipeline = BuildPipeline()
+            self.build_pipeline = BuildPipeline(inference=self._codegen_inference)
             logger.info("✅ Code generation engine loaded")
         except ImportError:
             logger.warning("Code generation engine not available")
@@ -1831,6 +1873,21 @@ class AgentOrchestrator:
         logger.info(f"[CALENDAR CREATE] result={result!r}")
         return result
 
+    async def _codegen_inference(self, prompt: str, system_prompt: str, max_tokens: int) -> str:
+        """Inference dependency injected into codegen.py's BuildPipeline/
+        CodeGenerator. BuildPipeline never owns a provider client or decides
+        which backend to use -- it only knows it needs text generated from a
+        prompt; the backend decision (via the same deterministic complexity
+        heuristic used everywhere else) and the actual provider call both
+        happen here, through the centralized router/gateway. Each build task
+        gets a fresh, throwaway scoped session id so a multi-call code task
+        never touches or accumulates Mel's primary conversation history."""
+        backend = self.router.choose("CODE", {}, prompt)
+        scoped_session_id = f"code-task:{secrets.token_hex(8)}"
+        return await self.gateway.generate_structured(
+            backend, scoped_session_id, prompt, system_prompt=system_prompt, max_tokens=max_tokens
+        )
+
     # ─────────────────────────────────────────────
     # CODE Handler - Build apps, sites, scripts
     # ─────────────────────────────────────────────
@@ -1941,6 +1998,22 @@ class AgentOrchestrator:
 
         summary = classification.get("summary", user_input)
 
+        # Complex DevOps/systems reasoning (CI/CD redesign, security audit,
+        # etc.) escalates to Claude via the same deterministic complexity
+        # heuristic used everywhere else -- not because category==DEVOPS,
+        # and not decided by another LLM call. Simple "run this command"
+        # requests below are untouched and stay on the existing local
+        # Ollama command-generation path.
+        backend = self.router.choose("DEVOPS", classification, user_input)
+        if backend == Backend.CLAUDE:
+            # Note: ModelGateway.generate()'s CLAUDE branch does not currently
+            # support a custom system prompt (ClaudeClient.converse() always
+            # uses Mel's persona) -- a pre-existing gap from Phase 2, out of
+            # scope for this pass. Scoped session id still keeps this off
+            # Mel's primary conversation history.
+            scoped_session_id = f"devops-task:{secrets.token_hex(8)}"
+            return await self.gateway.generate(Backend.CLAUDE, scoped_session_id, user_input)
+
         # Use Ollama locally to determine what command to run
         cmd_prompt = f"""Based on this request, determine the exact shell command to run.
 Only respond with a JSON object: {{"command": "the shell command", "explanation": "what it does"}}
@@ -2016,8 +2089,10 @@ Request: {summary}"""
         try:
             from search import WebSearch
         except ImportError:
-            # Fall back to Claude for search-like questions
-            return await self.claude.converse(session_id, user_input)
+            # Fall back to Claude for search-like questions -- routed
+            # through the gateway/scoped session, same as the summarization
+            # path below, so this doesn't bypass cloud-egress policy either.
+            return await self.gateway.generate(Backend.CLAUDE, f"search-fallback:{session_id}", user_input)
 
         # Extract the search query — strip conversational preamble to get the core question
         query = user_input
@@ -2056,9 +2131,12 @@ Request: {summary}"""
 
         # Prefer OpenAI's web-search-grounded model when configured; fall
         # back to free DuckDuckGo + Claude summarization otherwise (also the
-        # fallback if OpenAI's call fails for any reason).
+        # fallback if OpenAI's call fails for any reason). Routed through the
+        # gateway (not self.openai directly) so this, the actual live SEARCH
+        # path, gets the same CloudContextPolicy sanitization/capping as
+        # every other cloud call -- not a second, unmanaged OpenAI path.
         if self.openai.api_key:
-            answer = await self.openai.web_search(query)
+            answer = await self.gateway.generate(Backend.OPENAI_SEARCH, session_id, query)
             if answer:
                 self._last_search_results = None
                 return answer
@@ -2085,7 +2163,16 @@ Request: {summary}"""
                 f"At the end, mention you can share the source links if they want more detail. "
                 f"Keep it to 2-4 sentences max."
             )
-            summary = await self.claude.converse(session_id, summary_prompt, extra_context="You are summarizing web search results. Be factual and concise.")
+            # Namespaced session id -- this is a one-off summarization task,
+            # not part of Mel's main conversation, so it must not inherit
+            # the real session's full private history via ClaudeClient's
+            # per-session history dict. Routed through the gateway (not
+            # self.claude directly) for the same centralized sanitization
+            # every other cloud call gets.
+            summary = await self.gateway.generate(
+                Backend.CLAUDE, f"search-summary:{session_id}", summary_prompt,
+                extra_context="You are summarizing web search results. Be factual and concise.",
+            )
             # Store the URLs so user can ask for them
             self._last_search_results = results
             return summary

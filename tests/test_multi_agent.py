@@ -195,25 +195,51 @@ class TestMultiAgentManagerExecute:
 
 class TestNonEscalation:
     """Backend choice must come solely from the real ModelRouter, and only
-    CODE/DEVOPS escalate -- agent identity itself must never imply Claude."""
+    a genuine complexity signal on CODE/DEVOPS escalates to Claude --
+    agent identity itself must never imply Claude. (SEARCH legitimately
+    routes to OPENAI_SEARCH, not LOCAL -- that's a real, intended
+    OpenAI-specific escalation, distinct from the Claude-escalation
+    guarantee this class is about.)"""
 
     @pytest.mark.asyncio
-    async def test_non_coding_specialists_stay_local_even_with_requires_cloud_true(self):
+    async def test_non_coding_non_search_specialists_stay_local_even_with_requires_cloud_true(self):
         manager, registry, router, gateway = make_manager()
         for agent_name, category in [
             ("email", "EMAIL"), ("calendar", "CALENDAR"), ("home", "HOME"),
-            ("memory", "KNOWLEDGE"), ("research", "SEARCH"), ("general", "INFORMATION"),
+            ("memory", "KNOWLEDGE"), ("general", "INFORMATION"),
         ]:
             gateway.generate.reset_mock()
             await manager.execute(agent_name, category, {"requires_cloud": True}, "input", "sess")
             backend_arg = gateway.generate.call_args.args[0]
             assert backend_arg == Backend.LOCAL, f"{agent_name} ({category}) should stay LOCAL"
+            assert backend_arg != Backend.CLAUDE
+
+    @pytest.mark.asyncio
+    async def test_search_routes_to_openai_search_not_claude(self):
+        # A legitimate, intended escalation -- OpenAI for live search -- but
+        # must never be Claude, and requires_cloud must not change that.
+        manager, registry, router, gateway = make_manager()
+        await manager.execute("research", "SEARCH", {"requires_cloud": True}, "latest news today", "sess")
+        backend_arg = gateway.generate.call_args.args[0]
+        assert backend_arg == Backend.OPENAI_SEARCH
+        assert backend_arg != Backend.CLAUDE
+
+    @pytest.mark.asyncio
+    async def test_simple_code_request_does_not_escalate_via_identity(self):
+        # A CODE category request with no complexity signal in the text
+        # stays LOCAL even though "coding" is the selected specialist --
+        # confirms escalation depends on task content, not agent identity.
+        manager, registry, router, gateway = make_manager()
+        assert registry.get("coding").default_backend == Backend.LOCAL
+        await manager.execute("coding", "CODE", {}, "make me a simple todo app", "sess")
+        backend_arg = gateway.generate.call_args.args[0]
+        assert backend_arg == Backend.LOCAL
 
     @pytest.mark.asyncio
     async def test_coding_specialist_still_escalates_via_category_not_identity(self):
-        # CODE category escalates because ModelRouter.choose("CODE", ...) says
-        # so -- not because the "coding" AgentDefinition carries any special
-        # backend. Confirm by checking a real ModelRouter instance is used.
+        # CODE category escalates because ModelRouter.choose("CODE", ...)'s
+        # complexity heuristic says so -- not because the "coding"
+        # AgentDefinition carries any special backend.
         manager, registry, router, gateway = make_manager()
         assert registry.get("coding").default_backend == Backend.LOCAL
         await manager.execute("coding", "CODE", {}, "refactor this function", "sess")

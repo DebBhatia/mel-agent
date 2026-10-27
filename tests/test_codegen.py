@@ -16,6 +16,7 @@ from codegen import (
     ShellExecutor,
     ProjectManager,
     CodeGenerator,
+    BuildPipeline,
 )
 
 
@@ -280,3 +281,86 @@ class TestProjectManager:
 
         pm = ProjectManager()
         assert pm.list_projects() == []
+
+
+# ── Phase 3 completion: CodeGenerator/BuildPipeline must not own a provider ──
+
+class TestCodeGeneratorNoDirectProvider:
+    def test_source_has_no_direct_provider_client(self):
+        import codegen
+        import inspect
+        source = inspect.getsource(codegen)
+        assert "httpx.AsyncClient(" not in source
+        assert "api.anthropic.com" not in source
+        assert "ANTHROPIC_API_KEY" not in inspect.getsource(codegen.CodeGenerator)
+
+    def test_init_accepts_inference_dependency(self):
+        async def fake_inference(prompt, system_prompt, max_tokens):
+            return "output"
+        gen = CodeGenerator(inference=fake_inference)
+        assert gen._inference is fake_inference
+
+    @pytest.mark.asyncio
+    async def test_generate_without_inference_raises(self):
+        gen = CodeGenerator()
+        with pytest.raises(RuntimeError):
+            await gen.generate("build me a todo app")
+
+    @pytest.mark.asyncio
+    async def test_generate_calls_injected_inference_with_system_prompt(self):
+        calls = []
+
+        async def fake_inference(prompt, system_prompt, max_tokens):
+            calls.append((prompt, system_prompt, max_tokens))
+            return (
+                "<<<META>>>\nproject_name: todo-app\nproject_type: html-site\n"
+                "description: A todo app\n<<<END_META>>>\n"
+                "<<<FILE: index.html | language: html>>>\n<html></html>\n<<<END_FILE>>>"
+            )
+
+        gen = CodeGenerator(inference=fake_inference)
+        result = await gen.generate("build me a todo app")
+        assert result["project_name"] == "todo-app"
+        assert len(calls) == 1
+        prompt, system_prompt, max_tokens = calls[0]
+        assert "build me a todo app" in prompt
+        assert system_prompt == CodeGenerator.SYSTEM_PROMPT
+        assert max_tokens == 8192
+
+    @pytest.mark.asyncio
+    async def test_iteration_prompt_includes_previous_context(self):
+        calls = []
+
+        async def fake_inference(prompt, system_prompt, max_tokens):
+            calls.append(prompt)
+            return (
+                "<<<META>>>\nproject_name: todo-app\nproject_type: html-site\n"
+                "description: A todo app\n<<<END_META>>>\n"
+                "<<<FILE: index.html | language: html>>>\n<html></html>\n<<<END_FILE>>>"
+            )
+
+        gen = CodeGenerator(inference=fake_inference)
+        await gen.generate("add a delete button", project_context="existing files: index.html", iteration=1)
+        assert "Previous version context" in calls[0]
+        assert "existing files: index.html" in calls[0]
+
+    @pytest.mark.asyncio
+    async def test_inference_exception_propagates(self):
+        async def failing_inference(prompt, system_prompt, max_tokens):
+            raise RuntimeError("Claude API: overloaded")
+
+        gen = CodeGenerator(inference=failing_inference)
+        with pytest.raises(RuntimeError):
+            await gen.generate("build me a todo app")
+
+
+class TestBuildPipelineWiresInference:
+    def test_build_pipeline_passes_inference_to_generator(self):
+        async def fake_inference(prompt, system_prompt, max_tokens):
+            return "output"
+        pipeline = BuildPipeline(inference=fake_inference)
+        assert pipeline.generator._inference is fake_inference
+
+    def test_build_pipeline_without_inference_defaults_none(self):
+        pipeline = BuildPipeline()
+        assert pipeline.generator._inference is None

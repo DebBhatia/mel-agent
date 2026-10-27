@@ -5,6 +5,7 @@ import sys
 import json
 import pytest
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -19,7 +20,9 @@ from orchestrator import (
     OllamaClient,
     ClaudeClient,
     OpenAIClient,
+    AgentOrchestrator,
 )
+from router import Backend
 
 
 # ── Config ────────────────────────────────────
@@ -361,3 +364,155 @@ class TestConversationalFallback:
         result = await orch._conversational_fallback("xyzzy random gibberish")
         assert result and len(result) > 0
         assert Config.USER_NAME in result
+
+
+# ── Phase 3 completion: live SEARCH must go through the gateway ──
+
+class TestHandleSearchGoesThroughGateway:
+    """_handle_search is the actual live SEARCH path -- it must not call
+    self.openai/self.claude directly, only self.gateway."""
+
+    def _make_orch_with_mocked_gateway(self):
+        orch = AgentOrchestrator()
+        orch.openai.api_key = "configured"
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="the answer")
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_openai_path_uses_gateway_not_openai_client_directly(self):
+        orch = self._make_orch_with_mocked_gateway()
+        orch.openai.web_search = AsyncMock(side_effect=AssertionError("must not call openai directly"))
+        result = await orch._handle_search("search for the weather in austin", {"intent": "web_search"}, "sess-1")
+        assert result == "the answer"
+        orch.gateway.generate.assert_awaited_once()
+        backend_arg = orch.gateway.generate.call_args.args[0]
+        assert backend_arg == Backend.OPENAI_SEARCH
+
+    @pytest.mark.asyncio
+    async def test_successful_openai_search_makes_exactly_one_provider_call(self):
+        # No second (DuckDuckGo/Claude) call when the gateway already answered.
+        orch = self._make_orch_with_mocked_gateway()
+        with patch("search.WebSearch.search", new=AsyncMock(side_effect=AssertionError("must not fall back"))):
+            await orch._handle_search("search for the weather in austin", {"intent": "web_search"}, "sess-1")
+        assert orch.gateway.generate.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_claude_summarization_fallback_uses_gateway_not_claude_directly(self):
+        orch = AgentOrchestrator()
+        orch.openai.api_key = ""  # forces the DuckDuckGo + Claude summarization fallback path
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="summarized answer")
+        orch.claude.converse = AsyncMock(side_effect=AssertionError("must not call claude directly"))
+        fake_results = [{"title": "Result A", "snippet": "snippet", "url": "http://example.com"}]
+        with patch("search.WebSearch.search", new=AsyncMock(return_value=fake_results)):
+            result = await orch._handle_search("search for the weather in austin", {"intent": "web_search"}, "sess-1")
+        assert result == "summarized answer"
+        orch.gateway.generate.assert_awaited_once()
+        backend_arg = orch.gateway.generate.call_args.args[0]
+        assert backend_arg == Backend.CLAUDE
+
+    @pytest.mark.asyncio
+    async def test_claude_summarization_uses_scoped_session_not_main_session(self):
+        orch = AgentOrchestrator()
+        orch.openai.api_key = ""
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="summarized answer")
+        fake_results = [{"title": "Result A", "snippet": "snippet", "url": "http://example.com"}]
+        with patch("search.WebSearch.search", new=AsyncMock(return_value=fake_results)):
+            await orch._handle_search("search for the weather in austin", {"intent": "web_search"}, "my-real-session")
+        session_id_arg = orch.gateway.generate.call_args.args[1]
+        assert session_id_arg != "my-real-session"
+        assert "my-real-session" in session_id_arg  # namespaced, not unrelated
+        assert session_id_arg.startswith("search-summary:")
+
+
+# ── Phase 3 completion: BuildPipeline/CodeGenerator inference injection ──
+
+class TestCodegenInferenceDependency:
+    """_codegen_inference is the orchestrator-owned decision point --
+    BuildPipeline/CodeGenerator must never own a provider client."""
+
+    @pytest.mark.asyncio
+    async def test_simple_code_request_routes_local_via_gateway(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_structured = AsyncMock(return_value="local codegen output")
+        result = await orch._codegen_inference("build me a simple todo app", "SYSTEM_PROMPT", 8192)
+        assert result == "local codegen output"
+        backend_arg = orch.gateway.generate_structured.call_args.args[0]
+        assert backend_arg == Backend.LOCAL
+
+    @pytest.mark.asyncio
+    async def test_complex_code_request_routes_claude_via_gateway(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_structured = AsyncMock(return_value="claude codegen output")
+        result = await orch._codegen_inference("refactor this codebase's architecture", "SYSTEM_PROMPT", 8192)
+        assert result == "claude codegen output"
+        backend_arg = orch.gateway.generate_structured.call_args.args[0]
+        assert backend_arg == Backend.CLAUDE
+
+    @pytest.mark.asyncio
+    async def test_codegen_uses_scoped_session_not_main_session(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_structured = AsyncMock(return_value="output")
+        await orch._codegen_inference("build me a website", "SYSTEM_PROMPT", 8192)
+        session_id_arg = orch.gateway.generate_structured.call_args.args[1]
+        assert session_id_arg.startswith("code-task:")
+
+    @pytest.mark.asyncio
+    async def test_codegen_passes_through_system_prompt_and_max_tokens(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_structured = AsyncMock(return_value="output")
+        await orch._codegen_inference("build me a website", "MY_SYSTEM_PROMPT", 4096)
+        args, kwargs = orch.gateway.generate_structured.call_args
+        assert kwargs["system_prompt"] == "MY_SYSTEM_PROMPT"
+        assert kwargs["max_tokens"] == 4096
+
+    def test_build_pipeline_wires_orchestrator_inference(self):
+        orch = AgentOrchestrator()
+        if orch.build_pipeline is not None:
+            assert orch.build_pipeline.generator._inference == orch._codegen_inference
+
+
+# ── Phase 3 completion: DEVOPS complexity routing through the gateway ──
+
+class TestHandleDevopsGatewayRouting:
+    @pytest.mark.asyncio
+    async def test_simple_devops_request_stays_on_local_ollama_path(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.ollama.chat = AsyncMock(return_value='{"command": "ls", "explanation": "lists files"}')
+        with patch("codegen.ShellExecutor.execute", new=AsyncMock(return_value={"success": True, "stdout": "ok"})):
+            await orch._handle_devops("restart the local dev server", {"summary": "restart the local dev server"})
+        orch.gateway.generate.assert_not_awaited()
+        orch.ollama.chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_complex_devops_request_routes_to_claude_via_gateway(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="claude devops answer")
+        orch.ollama.chat = AsyncMock(side_effect=AssertionError("must not use local command-gen path"))
+        result = await orch._handle_devops(
+            "help me redesign our CI/CD pipeline for faster deploys",
+            {"summary": "help me redesign our CI/CD pipeline for faster deploys"},
+        )
+        assert result == "claude devops answer"
+        orch.gateway.generate.assert_awaited_once()
+        assert orch.gateway.generate.call_args.args[0] == Backend.CLAUDE
+
+    @pytest.mark.asyncio
+    async def test_complex_devops_uses_scoped_session(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="claude devops answer")
+        await orch._handle_devops(
+            "help me redesign our CI/CD pipeline for faster deploys",
+            {"summary": "help me redesign our CI/CD pipeline for faster deploys"},
+        )
+        session_id_arg = orch.gateway.generate.call_args.args[1]
+        assert session_id_arg.startswith("devops-task:")

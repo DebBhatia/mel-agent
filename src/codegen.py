@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 from enum import Enum
 
-import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -144,57 +143,32 @@ more file contents
 
 IMPORTANT: Use this exact format. Do NOT wrap in JSON. Do NOT use markdown code blocks."""
 
-    def __init__(self):
-        self.api_key = CodeGenConfig.ANTHROPIC_API_KEY
-        self.model = CodeGenConfig.CLAUDE_MODEL
+    def __init__(self, inference=None):
+        """inference: async callable(prompt: str, system_prompt: str,
+        max_tokens: int) -> str, supplied by the orchestrator. CodeGenerator
+        never owns a provider client and never decides which backend to use
+        -- it only knows it needs text generated from a prompt. The
+        orchestrator's inference dependency picks LOCAL vs CLAUDE (via the
+        same complexity heuristic used everywhere else) and executes through
+        the centralized ModelGateway/CloudContextPolicy."""
+        self._inference = inference
 
     async def generate(self, prompt: str, project_context: str = "", iteration: int = 0) -> dict:
         """Generate a complete project from a natural language description."""
-        messages = []
+        if self._inference is None:
+            raise RuntimeError("CodeGenerator requires an inference dependency (none supplied)")
 
         if iteration > 0:
-            messages.append({
-                "role": "user",
-                "content": f"Previous version context:\n{project_context}\n\n"
-                           f"New request (iteration {iteration}):\n{prompt}"
-            })
+            user_message = (
+                f"Previous version context:\n{project_context}\n\n"
+                f"New request (iteration {iteration}):\n{prompt}"
+            )
         else:
-            messages.append({
-                "role": "user",
-                "content": f"Build this project:\n\n{prompt}"
-            })
-
-        headers = {
-            "x-api-key": self.api_key,
-            "content-type": "application/json",
-            "anthropic-version": "2023-06-01",
-        }
-
-        payload = {
-            "model": self.model,
-            "max_tokens": 8192,
-            "system": self.SYSTEM_PROMPT,
-            "messages": messages,
-        }
+            user_message = f"Build this project:\n\n{prompt}"
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers=headers,
-                    json=payload,
-                )
-                result = response.json()
-                if "error" in result:
-                    error_msg = result["error"].get("message", str(result["error"]))
-                    logger.error(f"Claude API error: {error_msg}")
-                    raise RuntimeError(f"Claude API: {error_msg}")
-                if "content" not in result or not result["content"]:
-                    logger.error(f"Unexpected API response: {str(result)[:200]}")
-                    raise RuntimeError("Empty response from Claude API")
-                raw_text = result["content"][0]["text"]
-                return self._parse_response(raw_text)
-
+            raw_text = await self._inference(user_message, self.SYSTEM_PROMPT, 8192)
+            return self._parse_response(raw_text)
         except Exception as e:
             logger.error(f"Code generation failed: {e}")
             raise
@@ -754,8 +728,8 @@ class BuildPipeline:
     This is what the orchestrator calls.
     """
 
-    def __init__(self):
-        self.generator = CodeGenerator()
+    def __init__(self, inference=None):
+        self.generator = CodeGenerator(inference=inference)
         self.manager = ProjectManager()
         self.deployer = Deployer()
         self.shell = ShellExecutor()
