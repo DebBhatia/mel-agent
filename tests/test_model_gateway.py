@@ -136,3 +136,21 @@ class TestCloudContextSanitizationAtGateway:
         gateway, ollama, claude, openai = make_gateway()
         await gateway.generate(Backend.CLAUDE, "sess", "hi", extra_context="ctx")
         claude.converse.assert_awaited_once_with("sess", "hi", extra_context="ctx")
+
+
+class TestGenerateImage:
+    @pytest.mark.asyncio
+    async def test_image_prompt_is_sanitized(self):
+        gateway, ollama, claude, openai = make_gateway()
+        openai.generate_image = AsyncMock(return_value="img.png")
+        result = await gateway.generate_image("a poster for bob@example.com")
+        assert result == "img.png"
+        sent = openai.generate_image.call_args.args[0]
+        assert "bob@example.com" not in sent
+        assert "EMAIL_REDACTED" in sent
+
+    @pytest.mark.asyncio
+    async def test_no_openai_client_returns_none(self):
+        ollama, claude = AsyncMock(), AsyncMock()
+        gateway = ModelGateway(ollama, claude, None)
+        assert await gateway.generate_image("a donkey") is None

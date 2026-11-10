@@ -86,3 +86,12 @@ class ModelGateway:
 
         # Backend.LOCAL (default) -- never leaves the machine, not sanitized
         return await self.ollama.chat(message, system_prompt=system_prompt)
+
+    async def generate_image(self, prompt: str) -> str | None:
+        """Image generation via OpenAI, with the prompt sanitized/capped the
+        same as every other cloud call. Returns the saved filename, or None
+        when OpenAI isn't configured or generation failed."""
+        if self.openai is None:
+            return None
+        safe_prompt, _ = self._cloud_policy.sanitize(prompt)
+        return await self.openai.generate_image(safe_prompt)

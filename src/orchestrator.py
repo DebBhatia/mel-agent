@@ -1369,9 +1369,9 @@ class AgentOrchestrator:
     async def _conversational_fallback(self, user_input: str, session_id: str = "default") -> str:
         """Generate a response when Claude streaming fails or returns empty.
         Tries non-streaming Claude first, then Ollama, then a hardcoded response."""
-        # Try non-streaming Claude
+        # Try non-streaming Claude (through the gateway so CloudContextPolicy applies)
         try:
-            response = await self.claude.converse(session_id, user_input)
+            response = await self.gateway.generate(Backend.CLAUDE, session_id, user_input)
             if (response and response.strip()
                     and "trouble reaching" not in response.lower()
                     and "not configured" not in response.lower()):
@@ -2210,7 +2210,7 @@ Request: {summary}"""
         if not subject:
             subject = user_input
 
-        filename = await self.openai.generate_image(subject)
+        filename = await self.gateway.generate_image(subject)
         if not filename:
             return "That didn't come through -- might be an OpenAI hiccup. Want me to try again?"
 
@@ -2543,20 +2543,30 @@ Request: {summary}"""
 
         # Draft / compose
         if any(kw in _inp for kw in ["draft", "compose", "write an email", "write email"]):
-            # Try to extract to/subject/body from input via Claude
-            context = (
-                "The user wants to draft an email. Extract: to (email address), subject, body. "
-                "If the user didn't specify a recipient, set to as empty. "
-                "Return ONLY a JSON object: {\"to\": \"\", \"subject\": \"\", \"body\": \"\"}"
+            # The recipient is extracted locally -- the gateway's CloudContextPolicy
+            # redacts email addresses, so Claude only drafts subject/body.
+            addr_match = re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', user_input)
+            recipient = addr_match.group(0) if addr_match else ""
+            system_prompt = (
+                "The user wants to draft an email. Extract: subject, body. "
+                "Return ONLY a JSON object: {\"subject\": \"\", \"body\": \"\"}"
             )
             try:
-                result = await self.claude.reason(user_input, context)
                 import json
-                params = json.loads(result)
+                result = await self.gateway.generate_structured(
+                    Backend.CLAUDE, "email-draft", user_input, system_prompt, max_tokens=1024
+                )
+                result = re.sub(r'^```(?:json)?\s*|\s*```$', '', result.strip())
+                parsed = json.loads(result)
+                params = {
+                    "to": recipient,
+                    "subject": parsed.get("subject", ""),
+                    "body": parsed.get("body", ""),
+                }
                 return await self.actions.execute("gmail_draft", params)
             except Exception:
                 return await self.actions.execute("gmail_draft", {
-                    "to": "", "subject": user_input, "body": ""
+                    "to": recipient, "subject": user_input, "body": ""
                 })
 
         # Search

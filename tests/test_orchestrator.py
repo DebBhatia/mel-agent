@@ -329,6 +329,13 @@ class TestImageHandler:
 
 
 class TestConversationalFallback:
+    @pytest.fixture(autouse=True)
+    def _no_local_ollama(self, monkeypatch):
+        # Exercise the canned last-resort tier deterministically instead of
+        # whatever a live local Ollama happens to reply.
+        from orchestrator import OllamaClient
+        monkeypatch.setattr(OllamaClient, "is_available", AsyncMock(return_value=False))
+
     @pytest.mark.asyncio
     async def test_greeting_fallback(self):
         from orchestrator import AgentOrchestrator
@@ -357,8 +364,10 @@ class TestConversationalFallback:
         assert result and len(result) > 0
 
     @pytest.mark.asyncio
-    async def test_unknown_fallback(self):
+    async def test_unknown_fallback(self, monkeypatch):
+        import random
         from orchestrator import AgentOrchestrator
+        monkeypatch.setattr(random, "choice", lambda seq: seq[0])
         orch = AgentOrchestrator()
         orch.claude.api_key = ""
         result = await orch._conversational_fallback("xyzzy random gibberish")
@@ -516,3 +525,77 @@ class TestHandleDevopsGatewayRouting:
         )
         session_id_arg = orch.gateway.generate.call_args.args[1]
         assert session_id_arg.startswith("devops-task:")
+
+
+# ── Phase 3 completion: remaining handlers must not bypass the gateway ──
+
+class TestNoDirectCloudCallsInOrchestrator:
+    def test_orchestrator_source_has_no_direct_cloud_client_calls(self):
+        import inspect
+        source = inspect.getsource(AgentOrchestrator)
+        for forbidden in ("self.claude.converse(", "self.claude.converse_stream(",
+                          "self.claude.reason(", "self.claude.complete(",
+                          "self.openai.generate_image(", "self.openai.web_search("):
+            assert forbidden not in source, f"{forbidden} bypasses ModelGateway"
+
+
+class TestConversationalFallbackUsesGateway:
+    @pytest.mark.asyncio
+    async def test_claude_fallback_goes_through_gateway(self):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate = AsyncMock(return_value="hey, all good here")
+        orch.claude.converse = AsyncMock(side_effect=AssertionError("must not call claude directly"))
+        result = await orch._conversational_fallback("how are you", "sess-1")
+        assert result == "hey, all good here"
+        assert orch.gateway.generate.call_args.args[:2] == (Backend.CLAUDE, "sess-1")
+
+
+class TestHandleImageUsesGateway:
+    @pytest.mark.asyncio
+    async def test_image_goes_through_gateway(self):
+        orch = AgentOrchestrator()
+        orch.openai.api_key = "configured"
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_image = AsyncMock(return_value="abc.png")
+        orch.openai.generate_image = AsyncMock(side_effect=AssertionError("must not call openai directly"))
+        result = await orch._handle_image("make a picture of a red fox", {})
+        orch.gateway.generate_image.assert_awaited_once_with("a red fox")
+        assert "/generated-images/abc.png" in result
+
+
+class TestHandleEmailDraftUsesGateway:
+    def _make_orch(self, claude_result):
+        orch = AgentOrchestrator()
+        orch.gateway = AsyncMock()
+        orch.gateway.generate_structured = AsyncMock(return_value=claude_result)
+        orch.claude.reason = AsyncMock(side_effect=AssertionError("must not call claude directly"))
+        orch.actions.execute = AsyncMock(return_value="draft created")
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_draft_uses_gateway_and_keeps_recipient_local(self):
+        orch = self._make_orch('{"subject": "Lunch", "body": "Free Friday?"}')
+        result = await orch._handle_email("draft an email to sam@example.com about lunch friday", {})
+        assert result == "draft created"
+        args = orch.gateway.generate_structured.call_args.args
+        assert args[0] == Backend.CLAUDE
+        orch.actions.execute.assert_awaited_once_with(
+            "gmail_draft", {"to": "sam@example.com", "subject": "Lunch", "body": "Free Friday?"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_draft_handles_fenced_json(self):
+        orch = self._make_orch('```json\n{"subject": "Hi", "body": "Hello"}\n```')
+        await orch._handle_email("compose a note saying hello", {})
+        params = orch.actions.execute.call_args.args[1]
+        assert params == {"to": "", "subject": "Hi", "body": "Hello"}
+
+    @pytest.mark.asyncio
+    async def test_draft_falls_back_when_cloud_fails(self):
+        orch = self._make_orch("")
+        orch.gateway.generate_structured = AsyncMock(side_effect=RuntimeError("Claude API key not configured"))
+        await orch._handle_email("draft an email to sam@example.com", {})
+        params = orch.actions.execute.call_args.args[1]
+        assert params["to"] == "sam@example.com"
+        assert params["subject"] == "draft an email to sam@example.com"
