@@ -661,14 +661,7 @@ async def text_to_speech(request: TTSRequest):
     if not api_key:
         raise HTTPException(status_code=503, detail="ElevenLabs not configured")
 
-    # Strip markdown so it doesn't get read aloud ("asterisk asterisk bold asterisk asterisk")
-    import re as _re
-    text = _re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)      # generated images (dashboard-only, not spoken)
-    text = _re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)   # bold/italic
-    text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)         # inline code / code blocks
-    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)  # headers
-    text = _re.sub(r'^\s*[-*•]\s+', '', text, flags=_re.MULTILINE)  # bullet points
-    text = _re.sub(r'\n{3,}', '\n\n', text).strip()
+    text = clean_text_for_speech(text)
 
     client = httpx.AsyncClient(timeout=30.0)
     try:
@@ -1524,6 +1517,23 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal server error"},
     )
+
+
+def clean_text_for_speech(text: str) -> str:
+    """Strip markdown, links, source lists and citation markers so TTS
+    doesn't read them aloud ("asterisk asterisk bold asterisk asterisk")."""
+    import re as _re
+    text = _re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)      # generated images (dashboard-only, not spoken)
+    text = _re.sub(r'\*\*Sources\*\*[\s\S]*$', '', text)       # research source list (dashboard-only)
+    text = _re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)   # markdown links -> link text
+    text = _re.sub(r'https?://\S+', '', text)                 # bare URLs
+    text = _re.sub(r'\s?\[\d+\]', '', text)                  # citation markers
+    text = _re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)   # bold/italic
+    text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)         # inline code / code blocks
+    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)  # headers
+    text = _re.sub(r'^\s*[-*•]\s+', '', text, flags=_re.MULTILINE)  # bullet points
+    text = _re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
 
 
 def _strip_paths(text: str) -> str:

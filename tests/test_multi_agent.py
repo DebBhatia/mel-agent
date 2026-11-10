@@ -18,13 +18,13 @@ from multi_agent import (
 )
 
 
-EXPECTED_SPECIALISTS = {"general", "email", "calendar", "research", "coding", "home", "memory"}
+EXPECTED_SPECIALISTS = {"general", "email", "calendar", "research", "coding", "home", "memory", "files"}
 
 
 # ── Registry ──────────────────────────────────
 
 class TestAgentRegistry:
-    def test_default_registry_has_seven_specialists(self):
+    def test_default_registry_has_expected_specialists(self):
         registry = build_default_registry()
         assert set(registry.names()) == EXPECTED_SPECIALISTS
 

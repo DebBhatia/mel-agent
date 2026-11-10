@@ -287,6 +287,24 @@ class CalendarPlugin:
         except Exception as e:
             return f"Failed to get events: {e}"
 
+    async def list_events_between(self, params: dict) -> list:
+        """Raw events between params["time_min"] and params["time_max"]
+        (RFC3339 with offset). Raises when the calendar is unreachable so
+        callers can tell "no events" apart from "couldn't check"."""
+        if not self.service:
+            self.authenticate()
+            if not self.service:
+                raise RuntimeError("Calendar not connected")
+        result = self.service.events().list(
+            calendarId=self._get_calendar_id(),
+            timeMin=params["time_min"],
+            timeMax=params["time_max"],
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=50,
+        ).execute()
+        return result.get("items", [])
+
     async def find_events_by_query(self, params: dict) -> list:
         """Search events by keyword and/or date range. Returns raw list of event dicts with IDs."""
         if not self.service:
@@ -705,6 +723,9 @@ def register_all_plugins(action_registry):
     action_registry.register("calendar_check",     calendar.check_availability,  "Check time slot availability")
     action_registry.register("calendar_day",       calendar.get_events_for_date, "Get events for a specific date")
     action_registry.register("calendar_find",      calendar.find_events_by_query,"Search events by keyword/date")
+    if hasattr(calendar, "list_events_between"):
+        action_registry.register("calendar_events_between", calendar.list_events_between,
+                                 "Raw events in a time window")
     action_registry.register("calendar_delete",    calendar.delete_event,        "Delete a calendar event by ID")
     action_registry.register("calendar_update",    calendar.update_event,        "Update a calendar event by ID")
     action_registry.register("restaurant_search", reservation.search_restaurants, "Search restaurants")

@@ -933,6 +933,14 @@ class AgentOrchestrator:
         self.smarthome = None
         self._init_extensions()
         self._init_plugins()
+        self.agent_runtime = None
+        try:
+            from agent_runtime import AgentRuntime
+            self.agent_runtime = AgentRuntime(self.gateway, self.specialist_registry, self.actions,
+                                              timezone=Config.TIMEZONE)
+            logger.info("✅ Agent task runtime loaded")
+        except Exception as e:
+            logger.warning(f"Agent task runtime not available: {e}")
 
     def _init_plugins(self):
         """Register action plugins (calendar, reservations, comms, music, home)."""
@@ -1108,10 +1116,13 @@ class AgentOrchestrator:
         # Normalize apostrophes (smart quotes → straight) before any matching
         _inp = user_input.lower().replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
 
-        # "Mel" / "Mel?" / "Mel:" / "Mel," — name alone or as prefix → attention acknowledgement
+        # "Mel" / "Mel?" / "Mel," alone → attention acknowledgement; "Mel, <request>" → the request
         _stripped = _inp.strip()
-        if _stripped in ("mel", "mel?", "mel!") or _stripped.startswith("mel:") or _stripped.startswith("mel,"):
+        if _stripped in ("mel", "mel?", "mel!", "mel,", "mel:"):
             return f"Yes, {Config.USER_NAME}?"
+        if re.match(r"mel\s*[,:]\s*\S", _stripped):
+            user_input = re.sub(r"^\s*mel\s*[,:]\s*", "", user_input, flags=re.IGNORECASE)
+            _inp = user_input.lower().replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
 
         # Check for wake/sleep commands — primary: "wake up daddy is home"
         _wake_variants = [
@@ -1137,6 +1148,13 @@ class AgentOrchestrator:
         # Step 0: If there's a pending confirmation action, route to calendar handler first
         if self.pending_calendar_action:
             return await self._handle_calendar(user_input, {})
+
+        # Step 0b: multi-step agent tasks (research / files / calendar slots /
+        # approvals). Regex-detected, returns None for everything else.
+        if self.agent_runtime:
+            agent_reply = await self.agent_runtime.handle(user_input, session_id)
+            if agent_reply is not None:
+                return agent_reply
 
         # Quick check: user asking for search sources/links from last search
         if hasattr(self, '_last_search_results') and self._last_search_results:
@@ -1276,9 +1294,12 @@ class AgentOrchestrator:
         _stripped = _inp.strip()
 
         # Quick responses — yield full result at once
-        if _stripped in ("mel", "mel?", "mel!") or _stripped.startswith("mel:") or _stripped.startswith("mel,"):
+        if _stripped in ("mel", "mel?", "mel!", "mel,", "mel:"):
             yield f"Yes, {Config.USER_NAME}?"
             return
+        if re.match(r"mel\s*[,:]\s*\S", _stripped):
+            user_input = re.sub(r"^\s*mel\s*[,:]\s*", "", user_input, flags=re.IGNORECASE)
+            _inp = user_input.lower().replace('\u2019', "'").replace('\u2018', "'").replace('\u02bc', "'")
 
         _wake_variants = [
             Config.WAKE_PHRASE.lower(), "wake up daddy's home", "wake up daddys home",
@@ -1299,6 +1320,12 @@ class AgentOrchestrator:
         if self.pending_calendar_action:
             yield await self._handle_calendar(user_input, {})
             return
+
+        if self.agent_runtime:
+            agent_reply = await self.agent_runtime.handle(user_input, session_id)
+            if agent_reply is not None:
+                yield agent_reply
+                return
 
         # Classify intent
         kw = self.classifier._keyword_classify(user_input)
